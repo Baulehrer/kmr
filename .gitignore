@@ -33,4 +33,21 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 radio_cache.sqlite
+radio_cache.sqlite-shm
+radio_cache.sqlite-wal
 .venv/
+
+# Python build artefacts
+__pycache__/
+*.pyc
+
+# Tool-local dirs
+.serena/
+.kilo/
+.claude/
+
+# Docker runtime volume
+data/
+
+# Local notes
+local/

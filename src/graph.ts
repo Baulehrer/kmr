@@ -1,129 +1,218 @@
-import { Database } from "bun:sqlite"
-import { getSimilarArtists, getCachedSimilar, getCachedArtistByMaId, matchesGenre } from "./ma-client"
+import db, { type GraphNodeRow, type GraphEdgeRow, type GraphEdgeWithNodeRow } from "./db"
+import { getSimilarArtists, getCachedArtistByMaId, getArtistDetail } from "./ma-client"
+import { matchesGenre, parseDecade } from "./genre"
 import { getAllArtists } from "./library"
 
-const db = new Database("radio_cache.sqlite", { create: true })
-
-db.run(`
-  CREATE TABLE IF NOT EXISTS graph_nodes (
-    ma_id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    genre TEXT,
-    updated_at INTEGER NOT NULL
-  )
-`)
-
-db.run(`
-  CREATE TABLE IF NOT EXISTS graph_edges (
-    from_ma_id INTEGER NOT NULL,
-    to_ma_id INTEGER NOT NULL,
-    score INTEGER DEFAULT 0,
-    PRIMARY KEY (from_ma_id, to_ma_id)
-  )
-`)
+const upsertNode = db.prepare(
+  "INSERT OR REPLACE INTO graph_nodes (ma_id, name, genre, country, updated_at, formed_in, decade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
+const upsertEdge = db.prepare(
+  "INSERT OR REPLACE INTO graph_edges (from_ma_id, to_ma_id, score) VALUES (?, ?, ?)"
+)
 
 export async function expandArtist(maId: number): Promise<void> {
-  const existing = db.query("SELECT 1 FROM graph_nodes WHERE ma_id = ?").get(maId)
-  if (existing) return
+  const hasEdges = db
+    .query("SELECT 1 FROM graph_edges WHERE from_ma_id = ? LIMIT 1")
+    .get(maId)
+  if (hasEdges) return
 
   const similar = await getSimilarArtists(maId)
-
-  const detail = getCachedArtistByMaId(maId)
-  db.run(
-    "INSERT OR REPLACE INTO graph_nodes (ma_id, name, genre, updated_at) VALUES (?, ?, ?, ?)",
-    [maId, detail?.name || "", detail?.genre || "", Date.now()]
-  )
-
-  for (const sim of similar) {
-    db.run(
-      "INSERT OR REPLACE INTO graph_edges (from_ma_id, to_ma_id, score) VALUES (?, ?, ?)",
-      [maId, sim.maId, sim.score]
-    )
-    db.run(
-      "INSERT OR REPLACE INTO graph_nodes (ma_id, name, genre, updated_at) VALUES (?, ?, ?, ?)",
-      [sim.maId, sim.name, sim.genre, Date.now()]
-    )
+  let detail = getCachedArtistByMaId(maId)
+  if (!detail?.formedIn) {
+    try {
+      const fetched = await getArtistDetail(maId)
+      if (fetched) detail = fetched
+    } catch {}
   }
+  const now = Date.now()
+  const decade = parseDecade(detail?.formedIn)
+
+  const tx = db.transaction(() => {
+    upsertNode.run(
+      maId,
+      detail?.name || "",
+      detail?.genre || "",
+      detail?.country || "",
+      now,
+      detail?.formedIn || null,
+      decade,
+      "ma",
+    )
+    for (const sim of similar) {
+      upsertEdge.run(maId, sim.maId, sim.score)
+      upsertNode.run(sim.maId, sim.name, sim.genre, sim.country || "", now, null, null, "ma")
+    }
+  })
+  tx()
 }
 
-export function getSimilar(maId: number): number[] {
-  const edges = db
-    .query("SELECT to_ma_id, score FROM graph_edges WHERE from_ma_id = ? ORDER BY score DESC")
-    .all(maId) as any[]
+export function upsertGraphNode(node: {
+  maId: number
+  name: string
+  genre?: string
+  country?: string
+  formedIn?: string | null
+  source?: string
+}): void {
+  const decade = node.formedIn ? parseDecade(node.formedIn) : null
+  upsertNode.run(
+    node.maId,
+    node.name,
+    node.genre || "",
+    node.country || "",
+    Date.now(),
+    node.formedIn ?? null,
+    decade,
+    node.source || "ma",
+  )
+}
 
-  if (edges.length === 0) {
-    const cached = getCachedSimilar(maId)
-    return cached.map((s) => s.maId)
+export function getGraphNodeByName(name: string): GraphNodeRow | null {
+  const row = db
+    .query("SELECT * FROM graph_nodes WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1")
+    .get(name) as GraphNodeRow | undefined
+  return row ?? null
+}
+
+export type NeighborLookup = (id: number) => { id: number; score: number }[]
+
+/**
+ * Pure BFS: starting at `anchorId`, walks the adjacency provided by
+ * `getNeighbors` up to `maxHops` hops. Returns each visited node (excluding the
+ * anchor) with its minimum hop distance and the best path score along the
+ * highest-scoring path of that length. Path score is the product of edge
+ * scores normalized to 0..1, so closer & stronger paths score higher.
+ */
+export function bfsNeighborhood(
+  anchorId: number,
+  maxHops: 1 | 2 | 3,
+  getNeighbors: NeighborLookup,
+): Map<number, { hops: number; aggregateScore: number }> {
+  const result = new Map<number, { hops: number; aggregateScore: number }>()
+  let frontier: Array<{ id: number; score: number }> = [{ id: anchorId, score: 1 }]
+  const bestScore = new Map<number, number>([[anchorId, 1]])
+
+  for (let hop = 1; hop <= maxHops; hop++) {
+    if (frontier.length === 0) break
+    const nextFrontier = new Map<number, number>()
+    for (const { id, score } of frontier) {
+      for (const n of getNeighbors(id)) {
+        if (n.id === anchorId) continue
+        const edgeScore = Math.max(0, n.score) / 100
+        const pathScore = score * Math.max(0.01, edgeScore)
+        const existing = result.get(n.id)
+        if (!existing) {
+          result.set(n.id, { hops: hop, aggregateScore: pathScore })
+        } else if (existing.hops === hop && pathScore > existing.aggregateScore) {
+          existing.aggregateScore = pathScore
+        }
+        const seen = bestScore.get(n.id) ?? -1
+        if (pathScore > seen) {
+          bestScore.set(n.id, pathScore)
+          nextFrontier.set(n.id, pathScore)
+        }
+      }
+    }
+    frontier = [...nextFrontier.entries()].map(([id, score]) => ({ id, score }))
   }
 
-  return edges.map((e) => e.to_ma_id as number)
+  return result
+}
+
+function neighborsFromDb(id: number): { id: number; score: number }[] {
+  return db
+    .query(
+      `SELECT to_ma_id AS id, score FROM graph_edges WHERE from_ma_id = ?
+       UNION
+       SELECT from_ma_id AS id, score FROM graph_edges WHERE to_ma_id = ?`,
+    )
+    .all(id, id) as { id: number; score: number }[]
+}
+
+/**
+ * Bidirectional BFS over `graph_edges`. Returns every node reachable from
+ * `anchorId` within `maxHops` hops, excluding the anchor itself.
+ */
+export function getNeighborhood(
+  anchorId: number,
+  maxHops: 1 | 2 | 3,
+): Map<number, { hops: number; aggregateScore: number }> {
+  return bfsNeighborhood(anchorId, maxHops, neighborsFromDb)
+}
+
+export function getNodesByIds(maIds: number[]): GraphNodeRow[] {
+  if (maIds.length === 0) return []
+  const placeholders = maIds.map(() => "?").join(",")
+  return db
+    .query(`SELECT * FROM graph_nodes WHERE ma_id IN (${placeholders})`)
+    .all(...maIds) as GraphNodeRow[]
 }
 
 export function getArtistsInGenre(genre: string): number[] {
-  const normalized = genre.toLowerCase()
+  const matched = new Set<number>()
 
-  const fromNodes = db
-    .query("SELECT ma_id, genre FROM graph_nodes WHERE genre IS NOT NULL")
-    .all() as any[]
-
-  const matched: number[] = []
-  for (const row of fromNodes) {
-    if (matchesGenre(row.genre, genre)) {
-      matched.push(row.ma_id)
-    }
+  const rows = db
+    .query("SELECT ma_id, genre FROM graph_nodes WHERE genre IS NOT NULL AND genre != ''")
+    .all() as Pick<GraphNodeRow, "ma_id" | "genre">[]
+  for (const row of rows) {
+    if (row.genre && matchesGenre(row.genre, genre)) matched.add(row.ma_id)
   }
 
   for (const artist of getAllArtists()) {
-    if (artist.maId && artist.genres.some((g) => g.toLowerCase().includes(normalized))) {
-      if (!matched.includes(artist.maId)) {
-        matched.push(artist.maId)
-      }
+    if (artist.maId && matchesGenre(artist.genres, genre)) {
+      matched.add(artist.maId)
     }
   }
 
-  return matched
+  return [...matched]
 }
 
-export function getGraphNode(maId: number): { maId: number; name: string; genre: string } | null {
-  const row = db.query("SELECT * FROM graph_nodes WHERE ma_id = ?").get(maId) as any
+export function getGraphNode(maId: number): { maId: number; name: string; genre: string; country: string } | null {
+  const row = db
+    .query("SELECT * FROM graph_nodes WHERE ma_id = ?")
+    .get(maId) as GraphNodeRow | undefined
   if (!row) return null
-  return { maId: row.ma_id, name: row.name, genre: row.genre || "" }
+  return { maId: row.ma_id, name: row.name, genre: row.genre ?? "", country: row.country ?? "" }
 }
 
-export function getSimilarWithScores(maId: number): { maId: number; name: string; genre: string; score: number }[] {
+export function getSimilarWithScores(maId: number): { maId: number; name: string; genre: string; country: string; score: number }[] {
   const rows = db
     .query(
-      `SELECT e.to_ma_id AS ma_id, n.name, n.genre, e.score
+      `SELECT e.to_ma_id AS ma_id, n.name, n.genre, n.country, e.score
        FROM graph_edges e
        LEFT JOIN graph_nodes n ON n.ma_id = e.to_ma_id
        WHERE e.from_ma_id = ?
        ORDER BY e.score DESC`
     )
-    .all(maId) as any[]
+    .all(maId) as GraphEdgeWithNodeRow[]
 
   return rows.map((r) => ({
     maId: r.ma_id,
-    name: r.name || "",
-    genre: r.genre || "",
+    name: r.name ?? "",
+    genre: r.genre ?? "",
+    country: r.country ?? "",
     score: r.score || 0,
   }))
 }
 
 export function getFullGraph(): {
-  nodes: { maId: number; name: string; genre: string }[]
+  nodes: { maId: number; name: string; genre: string; country: string }[]
   edges: { from: number; to: number; score: number }[]
 } {
-  const nodes = (db.query("SELECT * FROM graph_nodes").all() as any[]).map((r) => ({
-    maId: r.ma_id,
-    name: r.name,
-    genre: r.genre || "",
-  }))
+  const nodeRows = db.query("SELECT * FROM graph_nodes").all() as GraphNodeRow[]
+  const edgeRows = db.query("SELECT * FROM graph_edges").all() as GraphEdgeRow[]
 
-  const edges = (db.query("SELECT * FROM graph_edges").all() as any[]).map((r) => ({
-    from: r.from_ma_id,
-    to: r.to_ma_id,
-    score: r.score,
-  }))
-
-  return { nodes, edges }
+  return {
+    nodes: nodeRows.map((r) => ({
+      maId: r.ma_id,
+      name: r.name,
+      genre: r.genre ?? "",
+      country: r.country ?? "",
+    })),
+    edges: edgeRows.map((r) => ({
+      from: r.from_ma_id,
+      to: r.to_ma_id,
+      score: r.score,
+    })),
+  }
 }

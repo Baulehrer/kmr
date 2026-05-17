@@ -1,6 +1,7 @@
-import { searchArtist, getSimilarArtists, matchesGenre } from "./ma-client"
+import { searchArtist, getSimilarArtists } from "./ma-client"
 import { searchTrack } from "./yt-client"
 import { getArtist, updateArtist } from "./library"
+import { parseGenre } from "./genre"
 import type { Artist, ResolvedTrack } from "./types"
 
 export async function resolveTrack(
@@ -12,10 +13,10 @@ export async function resolveTrack(
     if (result) {
       updateArtist(artist.name, {
         maId: result.maId,
-        genres: result.genre.split("/").map((g) => g.trim()).filter(Boolean),
+        genres: parseGenre(result.genre),
         country: result.country,
       })
-      artist = getArtist(artist.name)!
+      artist = getArtist(artist.name) ?? artist
     }
   }
 

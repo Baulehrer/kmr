@@ -1,6 +1,7 @@
 import { readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import type { Artist } from "./types"
+import { normalizeName } from "./genre"
 import config from "./radio.config"
 
 const artists = new Map<string, Artist>()
@@ -17,18 +18,24 @@ export function loadLibrary(): Map<string, Artist> {
 
   for (const entry of entries) {
     const fullPath = join(libPath, entry)
-    const stat = statSync(fullPath)
-    if (stat.isDirectory()) {
-      const name = entry.trim()
-      artists.set(name.toLowerCase(), {
-        name,
-        maId: null,
-        genres: [],
-        country: "",
-        similarIds: [],
-        source: "library",
-      })
+    let isDir = false
+    try {
+      isDir = statSync(fullPath).isDirectory()
+    } catch {
+      continue
     }
+    if (!isDir) continue
+
+    const name = entry.trim()
+    if (!name || name.startsWith(".")) continue
+    artists.set(normalizeName(name), {
+      name,
+      maId: null,
+      genres: [],
+      country: "",
+      similarIds: [],
+      source: "library",
+    })
   }
 
   console.log(`Library loaded: ${artists.size} artists from "${libPath}"`)
@@ -36,7 +43,7 @@ export function loadLibrary(): Map<string, Artist> {
 }
 
 export function getArtist(name: string): Artist | undefined {
-  return artists.get(name.toLowerCase())
+  return artists.get(normalizeName(name))
 }
 
 export function getAllArtists(): Artist[] {
@@ -44,8 +51,7 @@ export function getAllArtists(): Artist[] {
 }
 
 export function updateArtist(name: string, partial: Partial<Artist>): void {
-  const key = name.toLowerCase()
-  const existing = artists.get(key)
+  const existing = artists.get(normalizeName(name))
   if (existing) {
     Object.assign(existing, partial)
   }

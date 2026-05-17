@@ -1,25 +1,54 @@
-import { Database } from "bun:sqlite"
+import db, { type HistoryRow } from "./db"
+import { normalizeName } from "./genre"
 import type { QueueItem, ResolvedTrack } from "./types"
 
-const db = new Database("radio_cache.sqlite", { create: true })
-
-db.run(`
-  CREATE TABLE IF NOT EXISTS history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    video_id TEXT NOT NULL,
-    title TEXT,
-    artist TEXT,
-    genre TEXT,
-    country TEXT,
-    duration INTEGER DEFAULT 0,
-    source TEXT,
-    similar_to TEXT,
-    played_at INTEGER NOT NULL
-  )
-`)
-
 const queue: QueueItem[] = []
-export const recentArtists: string[] = []
+const recentArtists: string[] = []
+
+function pushRecent(artist: string): void {
+  const key = normalizeName(artist)
+  const idx = recentArtists.indexOf(key)
+  if (idx !== -1) recentArtists.splice(idx, 1)
+  recentArtists.push(key)
+}
+
+export function initRecentArtists(maxRecent: number): void {
+  recentArtists.length = 0
+  const rows = db
+    .query("SELECT artist FROM history ORDER BY played_at DESC LIMIT ?")
+    .all(maxRecent * 4) as Pick<HistoryRow, "artist">[]
+  for (const r of rows) {
+    if (!r.artist) continue
+    const key = normalizeName(r.artist)
+    if (recentArtists.includes(key)) continue
+    recentArtists.unshift(key)
+    if (recentArtists.length >= maxRecent) break
+  }
+}
+
+export function isRecentArtist(artist: string, maxRecent: number): boolean {
+  if (maxRecent <= 0) return false
+  const key = normalizeName(artist)
+  const idx = recentArtists.lastIndexOf(key)
+  if (idx === -1) return false
+  return recentArtists.length - idx <= maxRecent
+}
+
+export function trimRecentArtists(maxSize: number): void {
+  while (recentArtists.length > maxSize) {
+    recentArtists.shift()
+  }
+}
+
+export function isDuplicate(track: ResolvedTrack, repeatProtection: number): boolean {
+  if (isRecentArtist(track.artist, repeatProtection)) return true
+  const artistKey = normalizeName(track.artist)
+  for (const item of queue) {
+    if (item.track.videoId === track.videoId) return true
+    if (normalizeName(item.track.artist) === artistKey) return true
+  }
+  return false
+}
 
 export function enqueue(track: ResolvedTrack): void {
   queue.push({
@@ -45,9 +74,24 @@ export function clearQueue(): void {
   queue.length = 0
 }
 
+export function findQueuedByVideoId(videoId: string): { track: ResolvedTrack; index: number } | null {
+  const idx = queue.findIndex((q) => q.track.videoId === videoId)
+  if (idx === -1) return null
+  return { track: queue[idx]!.track, index: idx }
+}
+
+export function dropQueueUpTo(index: number): void {
+  if (index <= 0) return
+  queue.splice(0, index)
+}
+
+export function prepend(track: ResolvedTrack): void {
+  queue.unshift({ track, scheduledAt: Date.now(), playedAt: null })
+}
+
 export function addToHistory(track: ResolvedTrack): void {
   db.run(
-    "INSERT INTO history (video_id, title, artist, genre, country, duration, source, similar_to, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO history (video_id, title, artist, genre, country, duration, source, similar_to, played_at, hops_from_anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       track.videoId,
       track.title,
@@ -58,41 +102,26 @@ export function addToHistory(track: ResolvedTrack): void {
       track.source,
       track.similarTo || null,
       Date.now(),
+      track.hopsFromAnchor ?? null,
     ]
   )
-
-  if (!recentArtists.includes(track.artist)) {
-    recentArtists.push(track.artist)
-  }
+  pushRecent(track.artist)
 }
 
 export function getHistory(limit = 50): ResolvedTrack[] {
   const rows = db
-    .query(
-      "SELECT * FROM history ORDER BY played_at DESC LIMIT ?"
-    )
-    .all(limit) as any[]
+    .query("SELECT * FROM history ORDER BY played_at DESC LIMIT ?")
+    .all(limit) as HistoryRow[]
 
   return rows.map((r) => ({
     videoId: r.video_id,
-    title: r.title,
-    artist: r.artist,
-    genre: r.genre,
-    country: r.country || "",
+    title: r.title ?? "",
+    artist: r.artist ?? "",
+    genre: r.genre ?? "",
+    country: r.country ?? "",
     duration: r.duration,
-    source: r.source as "library" | "similar" | "discovery",
+    source: (r.source ?? "library") as ResolvedTrack["source"],
     similarTo: r.similar_to || undefined,
+    hopsFromAnchor: r.hops_from_anchor ?? undefined,
   }))
-}
-
-export function isRecentArtist(artist: string, maxRecent: number): boolean {
-  const idx = recentArtists.lastIndexOf(artist)
-  if (idx === -1) return false
-  return recentArtists.length - idx <= maxRecent
-}
-
-export function trimRecentArtists(maxSize: number): void {
-  while (recentArtists.length > maxSize) {
-    recentArtists.shift()
-  }
 }

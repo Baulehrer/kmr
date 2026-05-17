@@ -1,0 +1,15 @@
+node_modules
+.venv
+__pycache__
+*.pyc
+radio_cache.sqlite
+radio_cache.sqlite-shm
+radio_cache.sqlite-wal
+data
+.git
+.idea
+.serena
+.kilo
+local
+*.log
+.DS_Store

@@ -47,6 +47,7 @@ export interface ResolvedTrack {
   duration: number
   source: "library" | "similar" | "discovery"
   similarTo?: string
+  hopsFromAnchor?: number
 }
 
 export interface QueueItem {
@@ -63,8 +64,26 @@ export interface RadioConfig {
   repeatProtection: number
   similarWeight: number
   defaultGenre: string
-  defaultCountry: string
   server: {
     port: number
   }
+}
+
+export type Mode = "band" | "genre"
+export type Spread = "narrow" | "medium" | "wide"
+export type Decade = "70s" | "80s" | "90s" | "00s" | "10s" | "20s"
+export type AnchorSource = "ma" | "musicmap"
+
+export interface Anchor {
+  source: AnchorSource
+  sourceId: string
+  name: string
+}
+
+export const ALL_DECADES: Decade[] = ["70s", "80s", "90s", "00s", "10s", "20s"]
+
+export function spreadToHops(spread: Spread): 1 | 2 | 3 {
+  if (spread === "narrow") return 1
+  if (spread === "medium") return 2
+  return 3
 }
