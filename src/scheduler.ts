@@ -56,6 +56,7 @@ let pausedAt = 0
 
 let genresPromise: Promise<string[]> | null = null
 let cachedGenres: string[] | null = null
+let anchorFrequency: number = parseInt(loadSetting("anchorFrequency") || "0", 10)
 
 export function getCurrentGenre(): string {
   return currentGenre
@@ -125,6 +126,7 @@ export function getRadioState() {
     genre: currentGenre,
     decades: getDecades(),
     playing: isPlaying,
+    anchorFrequency,
   }
 }
 
@@ -137,6 +139,19 @@ export function getCurrentTrack(): (ResolvedTrack & { progress: number }) | null
 
 export function getIsPlaying(): boolean {
   return isPlaying
+}
+
+export function getAnchorFrequency(): number {
+  return anchorFrequency
+}
+
+export function setAnchorFrequency(next: number): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(next)))
+  if (anchorFrequency === clamped) return
+  anchorFrequency = clamped
+  saveSetting("anchorFrequency", String(clamped))
+  console.log(`Anchor frequency set to: ${clamped}%`)
+  clearQueue()
 }
 
 function pickRandom<T>(arr: T[]): T | undefined {
@@ -163,7 +178,7 @@ interface FallbackCandidate {
 
 /**
  * Try resolving up to `count` candidates from the weighted-sorted pool via YouTube.
- * Iterates in weighted order so highest-scored candidates are tried first.
+ * Fires all YT searches in parallel — whichever resolves first wins.
  * Returns the first successful ResolvedTrack, or null if all fail.
  */
 async function tryResolveWithFallback(
@@ -173,9 +188,10 @@ async function tryResolveWithFallback(
 ): Promise<ResolvedTrack | null> {
   if (candidates.length === 0) return null
   const limit = Math.min(count, candidates.length)
-  for (let i = 0; i < limit; i++) {
-    const track = await resolve(candidates[i]!.name)
-    if (track) return track
+  const promises = candidates.slice(0, limit).map((c) => resolve(c.name))
+  const results = await Promise.allSettled(promises)
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) return r.value
   }
   return null
 }
@@ -307,7 +323,35 @@ async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread
   })
 }
 
+/** Try to find a YouTube track for the anchor artist itself. */
+async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack | null> {
+  const ytVideo = await searchTrack(currentAnchor.name)
+  if (!ytVideo) return null
+  return {
+    videoId: ytVideo.videoId,
+    title: ytVideo.title,
+    artist: currentAnchor.name,
+    genre: "",
+    country: "",
+    duration: ytVideo.duration,
+    source: "similar",
+    similarTo: undefined,
+    hopsFromAnchor: 0,
+  }
+}
+
 async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
+  // Anchor frequency: when roll succeeds, try the anchor artist directly (works for any source)
+  if (anchorFrequency > 0) {
+    const maxAttempts = anchorFrequency >= 100 ? 3 : 1
+    if (anchorFrequency >= 100 || Math.random() * 100 < anchorFrequency) {
+      for (let i = 0; i < maxAttempts; i++) {
+        const anchorTrack = await resolveAnchorTrack(currentAnchor)
+        if (anchorTrack) return anchorTrack
+      }
+    }
+  }
+
   if (currentAnchor.source === "musicmap") {
     return await findByMusicMapAnchor(currentAnchor, currentSpread)
   }

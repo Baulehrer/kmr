@@ -21,6 +21,8 @@ import {
   setSpread,
   getDecades,
   setDecades,
+  getAnchorFrequency,
+  setAnchorFrequency,
   getRadioState,
 } from "./scheduler"
 import {
@@ -92,6 +94,7 @@ const ALLOWED_METHODS: Record<string, string[]> = {
   "/api/radio/spread": ["POST"],
   "/api/radio/genre": ["POST"],
   "/api/radio/random-genre": ["POST"],
+  "/api/radio/anchor-frequency": ["POST"],
   "/api/radio/decades": ["POST"],
   "/api/radio/jump": ["POST"],
   "/api/decades": ["GET"],
@@ -302,6 +305,18 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       return Response.json({ spread: getSpread() })
     }
 
+    case "/api/radio/anchor-frequency": {
+      const body = (await req.json().catch(() => ({}))) as { frequency?: number }
+      const freq = Number(body.frequency)
+      if (!Number.isFinite(freq) || freq < 0 || freq > 100) {
+        return Response.json({ error: "Invalid frequency (0-100)" }, { status: 400 })
+      }
+      setAnchorFrequency(freq)
+      broadcastState()
+      void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
+      return Response.json({ anchorFrequency: getAnchorFrequency() })
+    }
+
     case "/api/radio/genre": {
       const body = (await req.json().catch(() => ({}))) as { genre?: string }
       if (!body.genre || typeof body.genre !== "string") {
@@ -391,6 +406,17 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       const matches = getAllArtists()
         .filter((a) => a.name.toLowerCase().includes(needle))
         .map((a) => ({ name: a.name, maId: a.maId, genres: a.genres, country: a.country }))
+      // Fallback: search ma_artists for artists not in local library
+      if (matches.length === 0 || !matches.some((m) => m.maId)) {
+        const dbRows = db
+          .query("SELECT ma_id, name, genre, country FROM ma_artists WHERE name_key LIKE ? LIMIT 5")
+          .all(`%${needle}%`) as { ma_id: number; name: string; genre: string | null; country: string | null }[]
+        for (const row of dbRows) {
+          if (!matches.some((m) => m.name.toLowerCase() === row.name.toLowerCase())) {
+            matches.push({ name: row.name, maId: row.ma_id, genres: row.genre ? [row.genre] : [], country: row.country ?? "" })
+          }
+        }
+      }
       return Response.json({ artists: matches })
     }
 

@@ -284,8 +284,13 @@ body {
   pointer-events: none;
 }
 
+.stage-video.hero-stage {
+  align-items: stretch;
+  flex: 1;
+}
+
 .stage-video .player-frame {
-  height: var(--player-height);
+  height: 100%;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
@@ -458,6 +463,16 @@ body {
   font-weight: 700;
   color: var(--accent);
   letter-spacing: 0.01em;
+}
+
+.hero-meta .track-artist.clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.hero-meta .track-artist.clickable:hover {
+  color: var(--accent-hover);
 }
 
 .hero-meta .track-meta {
@@ -708,6 +723,27 @@ body {
   gap: 6px;
 }
 
+.anchor-frequency-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.anchor-frequency-wrap input[type="range"] {
+  flex: 1;
+  max-width: 120px;
+  accent-color: var(--accent);
+}
+
+.frequency-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 35px;
+  text-align: right;
+}
+
 .anchor-input {
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -931,8 +967,11 @@ body {
   .hero-stage {
     min-height: 220px;
   }
+  .stage-video.hero-stage {
+    min-height: 240px;
+  }
   .stage-video .player-frame {
-    height: 240px;
+    height: 100%;
   }
 }
 

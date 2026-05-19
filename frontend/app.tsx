@@ -179,6 +179,7 @@ function App() {
   const [genres, setGenres] = React.useState<string[]>([])
   const [mode, setMode] = React.useState<Mode>("genre")
   const [anchor, setAnchor] = React.useState<Anchor | null>(null)
+  const [anchorFrequency, setAnchorFrequency] = React.useState(0)
   const [spread, setSpread] = React.useState<Spread>("medium")
   const [decades, setDecades] = React.useState<Decade[]>([])
   const [anchorQuery, setAnchorQuery] = React.useState("")
@@ -345,6 +346,7 @@ function App() {
           setAnchor(msg.anchor ?? null)
           if (msg.spread) setSpread(msg.spread)
           if (Array.isArray(msg.decades)) setDecades(msg.decades)
+          if (typeof msg.anchorFrequency === "number") setAnchorFrequency(msg.anchorFrequency)
           setQueue((msg.queue || []) as Track[])
           setHistory((msg.history || []) as Track[])
         }
@@ -352,8 +354,11 @@ function App() {
         if (msg.type === "track") {
           if (msg.current) {
             setCurrent(msg.current)
-            setProgress(0)
-            loadVideo(msg.current.videoId)
+            // Only reset progress + load video when it's actually a NEW track
+            if (msg.current.videoId !== currentVideoIdRef.current) {
+              setProgress(0)
+              loadVideo(msg.current.videoId)
+            }
           }
           setQueue((msg.queue || []) as Track[])
           setHistory((msg.history || []) as Track[])
@@ -366,6 +371,7 @@ function App() {
           if ("anchor" in msg) setAnchor(msg.anchor ?? null)
           if (msg.spread) setSpread(msg.spread)
           if (Array.isArray(msg.decades)) setDecades(msg.decades)
+          if (typeof msg.anchorFrequency === "number") setAnchorFrequency(msg.anchorFrequency)
         }
       } catch {}
     }
@@ -522,6 +528,29 @@ function App() {
     try {
       await fetch("/api/radio/anchor", { method: "DELETE" })
       setAnchor(null)
+    } catch {}
+  }, [])
+
+  const openMAProfile = React.useCallback(async (artist: string) => {
+    if (!artist) return
+    try {
+      const data = await fetch("/api/artists/search?q=" + encodeURIComponent(artist)).then((r) => r.json())
+      const match = (data.artists || []).find((a: any) => a.name.toLowerCase() === artist.toLowerCase())
+      if (match?.maId) {
+        const slug = artist.replace(/\s+/g, "_")
+        window.open(`https://www.metal-archives.com/bands/${slug}/${match.maId}`, "_blank")
+      }
+    } catch {}
+  }, [])
+
+  const changeAnchorFrequency = React.useCallback(async (freq: number) => {
+    setAnchorFrequency(freq)
+    try {
+      await fetch("/api/radio/anchor-frequency", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frequency: freq }),
+      })
     } catch {}
   }, [])
 
@@ -756,7 +785,13 @@ function App() {
 
         <div className="hero-meta">
           <div className="track-title">{current?.title || "—"}</div>
-          <div className="track-artist">{current?.artist || ""}</div>
+          <div
+            className="track-artist clickable"
+            onClick={() => openMAProfile(current?.artist || "")}
+            title="Auf Metal-Archives öffnen"
+          >
+            {current?.artist || ""}
+          </div>
           {current && (
             <div className="track-meta">
               {current.genre && <span>{current.genre}</span>}
@@ -886,8 +921,9 @@ function App() {
                   value={anchorQuery}
                   onChange={(e) => setAnchorQuery((e.target as HTMLInputElement).value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && anchorQuery.trim()) {
-                      void commitAnchor(anchorQuery.trim())
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      if (anchorQuery.trim()) void commitAnchor(anchorQuery.trim())
                     }
                   }}
                 />
@@ -907,6 +943,17 @@ function App() {
                 )}
               </div>
             )}
+            <div className="mode-row anchor-frequency-wrap">
+              <span className="mode-row-label">Anchor-Freq.</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={anchorFrequency}
+                onChange={(e) => changeAnchorFrequency(Number((e.target as HTMLInputElement).value))}
+              />
+              <span className="frequency-label">{anchorFrequency}%</span>
+            </div>
           </div>
         ) : (
           <div className="mode-genre">
