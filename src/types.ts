@@ -82,15 +82,27 @@ export interface Anchor {
 
 export const ALL_DECADES: Decade[] = ["70s", "80s", "90s", "00s", "10s", "20s"]
 
+export interface SpreadConfig {
+  minScore: number
+  maxHops: 1 | 2 | 3
+  musicMapThreshold: number
+}
+
+export const SPREAD_CONFIG: Record<Spread, SpreadConfig> = {
+  narrow: { minScore: 70, maxHops: 2, musicMapThreshold: 80 },
+  medium: { minScore: 40, maxHops: 2, musicMapThreshold: 50 },
+  wide: { minScore: 10, maxHops: 3, musicMapThreshold: 10 },
+}
+
+export function getSpreadConfig(spread: Spread): SpreadConfig {
+  return SPREAD_CONFIG[spread]
+}
+
 export function spreadToHops(spread: Spread): 1 | 2 | 3 {
-  if (spread === "narrow") return 1
-  if (spread === "medium") return 2
-  return 3
+  return SPREAD_CONFIG[spread].maxHops
 }
 
 /** Minimum similarity score (0-100) for music-map results per spread level */
 export function spreadToMusicMapThreshold(spread: Spread): number {
-  if (spread === "narrow") return 80
-  if (spread === "medium") return 50
-  return 10
+  return SPREAD_CONFIG[spread].musicMapThreshold
 }

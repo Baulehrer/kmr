@@ -194,8 +194,26 @@ def musicmap_similar(query: str) -> dict:
     return result
 
 
+def browse_genres() -> dict:
+    """Fetch live genre list from MA's browse/genre page."""
+    url = "https://www.metal-archives.com/browse/genre"
+    result = fetch_url(url)
+    if result["error"] or result["status"] != 200:
+        return {"genres": MA_GENRES}
+    try:
+        body = result["body"]
+        # Parse <a href="/browse/genre/...">Genre Name</a>
+        genre_links = re.findall(
+            r'<a[^>]*href="/browse/genre/[^"]*"[^>]*>([^<]+)</a>', body
+        )
+        genres = sorted(set(html.unescape(g.strip()) for g in genre_links if g.strip()))
+        return {"genres": genres if genres else MA_GENRES}
+    except Exception as e:
+        return {"genres": MA_GENRES, "error": str(e)}
+
+
 def get_genres_countries() -> dict:
-    result = fetch_url("https://www.metal-archives.com/search/advanced/searching/bands")
+    result = fetch_url("https://www.metal-archives.com/search/advanced/")
     if result["error"] or result["status"] != 200:
         return {"genres": MA_GENRES, "countries": []}
     try:
@@ -228,6 +246,8 @@ def main() -> None:
             out = get_similar_artists(int(sys.argv[2]))
         elif command == "genres":
             out = get_genres_countries()
+        elif command == "browse-genres":
+            out = browse_genres()
         elif command == "musicmap-similar":
             out = musicmap_similar(sys.argv[2])
         elif command == "fetch":

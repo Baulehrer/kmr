@@ -159,6 +159,7 @@ function App() {
   const playerRef = React.useRef<YTPlayerLike | null>(null)
   const playerReadyRef = React.useRef(false)
   const pendingVideoIdRef = React.useRef<string | null>(null)
+  const currentVideoIdRef = React.useRef<string | null>(null)
   const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
   const playNextRef = React.useRef<() => void>(() => {})
   const playPrevRef = React.useRef<() => void>(() => {})
@@ -268,6 +269,9 @@ function App() {
   }, [showControls])
 
   const loadVideo = React.useCallback((videoId: string) => {
+    // Don't restart the same video — prevents prefetch broadcasts from resetting playback
+    if (videoId && videoId === currentVideoIdRef.current && playerReadyRef.current) return
+    currentVideoIdRef.current = videoId
     if (playerReadyRef.current && playerRef.current) {
       playerRef.current.loadVideoById(videoId)
       playerRef.current.setVolume(volumeRef.current)

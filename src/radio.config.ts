@@ -7,7 +7,7 @@ const config: RadioConfig = {
   prefetchThreshold: 5,
   repeatProtection: 50,
   similarWeight: 0.7,
-  defaultGenre: "Heavy Metal",
+  defaultGenre: "Heavy",
   server: {
     port: 3000,
   },

@@ -82,11 +82,13 @@ export type NeighborLookup = (id: number) => { id: number; score: number }[]
  * anchor) with its minimum hop distance and the best path score along the
  * highest-scoring path of that length. Path score is the product of edge
  * scores normalized to 0..1, so closer & stronger paths score higher.
+ * When `minScore > 0`, edges with score < minScore are skipped.
  */
 export function bfsNeighborhood(
   anchorId: number,
   maxHops: 1 | 2 | 3,
   getNeighbors: NeighborLookup,
+  minScore = 0,
 ): Map<number, { hops: number; aggregateScore: number }> {
   const result = new Map<number, { hops: number; aggregateScore: number }>()
   let frontier: Array<{ id: number; score: number }> = [{ id: anchorId, score: 1 }]
@@ -98,6 +100,7 @@ export function bfsNeighborhood(
     for (const { id, score } of frontier) {
       for (const n of getNeighbors(id)) {
         if (n.id === anchorId) continue
+        if (minScore > 0 && n.score < minScore) continue
         const edgeScore = Math.max(0, n.score) / 100
         const pathScore = score * Math.max(0.01, edgeScore)
         const existing = result.get(n.id)
@@ -119,25 +122,29 @@ export function bfsNeighborhood(
   return result
 }
 
-function neighborsFromDb(id: number): { id: number; score: number }[] {
-  return db
-    .query(
-      `SELECT to_ma_id AS id, score FROM graph_edges WHERE from_ma_id = ?
+function neighborsFromDb(id: number, minScore = 0): { id: number; score: number }[] {
+  const sql = minScore > 0
+    ? `SELECT to_ma_id AS id, score FROM graph_edges WHERE from_ma_id = ? AND score >= ?
        UNION
-       SELECT from_ma_id AS id, score FROM graph_edges WHERE to_ma_id = ?`,
-    )
-    .all(id, id) as { id: number; score: number }[]
+       SELECT from_ma_id AS id, score FROM graph_edges WHERE to_ma_id = ? AND score >= ?`
+    : `SELECT to_ma_id AS id, score FROM graph_edges WHERE from_ma_id = ?
+       UNION
+       SELECT from_ma_id AS id, score FROM graph_edges WHERE to_ma_id = ?`
+  return db.query(sql).all(...(minScore > 0 ? [id, minScore, id, minScore] : [id, id])) as { id: number; score: number }[]
 }
 
 /**
  * Bidirectional BFS over `graph_edges`. Returns every node reachable from
  * `anchorId` within `maxHops` hops, excluding the anchor itself.
+ * When `minScore > 0`, only edges with score >= minScore are traversed.
  */
 export function getNeighborhood(
   anchorId: number,
   maxHops: 1 | 2 | 3,
+  minScore = 0,
 ): Map<number, { hops: number; aggregateScore: number }> {
-  return bfsNeighborhood(anchorId, maxHops, neighborsFromDb)
+  const getNbr = (id: number) => neighborsFromDb(id, minScore)
+  return bfsNeighborhood(anchorId, maxHops, getNbr, minScore)
 }
 
 export function getNodesByIds(maIds: number[]): GraphNodeRow[] {

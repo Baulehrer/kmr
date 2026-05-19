@@ -1,14 +1,14 @@
 import { getAllArtists, getArtist, updateArtist } from "./library"
 import { searchArtist, runAdapter } from "./ma-client"
 import { resolveTrack } from "./resolver"
-import { expandArtist, getArtistsInGenre, getGraphNode, getSimilarWithScores, getNeighborhood, getNodesByIds } from "./graph"
+import { expandArtist, getArtistsInGenre, getGraphNode, getGraphNodeByName, getSimilarWithScores, getNeighborhood, getNodesByIds } from "./graph"
 import { getMusicMapSimilar } from "./musicmap-client"
 import { enqueue, getQueueSize, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
 import { searchTrack } from "./yt-client"
-import { parseGenre, matchesGenre, matchesDecade } from "./genre"
+import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
 import { getMultiplier, isBlocked } from "./feedback"
-import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor } from "./types"
-import { spreadToHops, spreadToMusicMapThreshold, ALL_DECADES } from "./types"
+import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig } from "./types"
+import { spreadToHops, spreadToMusicMapThreshold, ALL_DECADES, getSpreadConfig } from "./types"
 import db, { type SettingsRow } from "./db"
 import config from "./radio.config"
 
@@ -39,7 +39,7 @@ let anchor: Anchor | null = (() => {
   return null
 })()
 let spread: Spread = STORED_SPREAD === "narrow" || STORED_SPREAD === "wide" ? STORED_SPREAD : "medium"
-let currentGenre: string = STORED_GENRE || config.defaultGenre
+let currentGenre: string = toCanonicalGenre(STORED_GENRE || "") ?? config.defaultGenre
 let currentDecades: Decade[] = (() => {
   if (!STORED_DECADES) return []
   try {
@@ -62,10 +62,11 @@ export function getCurrentGenre(): string {
 }
 
 export function setGenre(next: string): void {
-  if (currentGenre === next) return
-  currentGenre = next
-  saveSetting("genre", next)
-  console.log(`Genre set to: ${next}`)
+  const canonical = toCanonicalGenre(next) ?? next
+  if (currentGenre === canonical) return
+  currentGenre = canonical
+  saveSetting("genre", canonical)
+  console.log(`Genre set to: ${canonical}`)
   clearQueue()
 }
 
@@ -155,6 +156,30 @@ function weightedPick<T extends { score: number }>(items: T[]): T | null {
   return items[items.length - 1] ?? null
 }
 
+interface FallbackCandidate {
+  name: string
+  [key: string]: unknown
+}
+
+/**
+ * Try resolving up to `count` candidates from the weighted-sorted pool via YouTube.
+ * Iterates in weighted order so highest-scored candidates are tried first.
+ * Returns the first successful ResolvedTrack, or null if all fail.
+ */
+async function tryResolveWithFallback(
+  candidates: FallbackCandidate[],
+  resolve: (name: string) => Promise<ResolvedTrack | null>,
+  count = 3,
+): Promise<ResolvedTrack | null> {
+  if (candidates.length === 0) return null
+  const limit = Math.min(count, candidates.length)
+  for (let i = 0; i < limit; i++) {
+    const track = await resolve(candidates[i]!.name)
+    if (track) return track
+  }
+  return null
+}
+
 async function findLibraryArtist(genre: string): Promise<Artist | null> {
   const candidates: Artist[] = []
   const fallback: Artist[] = []
@@ -175,7 +200,7 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
       if (ma && matchesGenre(ma.genre, genre)) {
         updateArtist(artist.name, {
           maId: ma.maId,
-          genres: parseGenre(ma.genre),
+          genres: filterCanonical(parseGenre(ma.genre)),
           country: ma.country,
         })
         const updated = getArtist(artist.name)
@@ -214,33 +239,37 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
   const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection))
   const finalPool = nonRecent.length > 0 ? nonRecent : pool
 
-  const weighted = finalPool.map((s) => ({
-    ...s,
-    score: Math.max(0.01, s.score * getMultiplier(s.name)),
-  }))
-  const chosen = weightedPick(weighted)
-  if (!chosen) return null
+  const weighted = finalPool
+    .map((s) => ({
+      name: s.name,
+      maId: s.maId,
+      genre: s.genre,
+      country: s.country,
+      score: Math.max(0.01, s.score * getMultiplier(s.name)),
+    }))
+    .sort((a, b) => b.score - a.score)
 
-  const chosenNode = getGraphNode(chosen.maId)
-  if (!chosenNode) return null
-
-  void expandArtist(chosen.maId).catch(() => {})
-
-  const ytVideo = await searchTrack(chosenNode.name)
-  if (!ytVideo) return null
+  if (weighted.length === 0) return null
 
   const sourceNode = getGraphNode(seedId)
 
-  return {
-    videoId: ytVideo.videoId,
-    title: ytVideo.title,
-    artist: chosenNode.name,
-    genre: chosenNode.genre || genre,
-    country: chosenNode.country,
-    duration: ytVideo.duration,
-    source: "similar",
-    similarTo: sourceNode?.name,
-  }
+  return await tryResolveWithFallback(weighted, async (name) => {
+    const node = getGraphNodeByName(name)
+    if (!node) return null
+    void expandArtist(node.ma_id).catch(() => {})
+    const ytVideo = await searchTrack(name)
+    if (!ytVideo) return null
+    return {
+      videoId: ytVideo.videoId,
+      title: ytVideo.title,
+      artist: name,
+      genre: node.genre || genre,
+      country: node.country || "",
+      duration: ytVideo.duration,
+      source: "similar",
+      similarTo: sourceNode?.name,
+    }
+  })
 }
 
 async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
@@ -254,28 +283,28 @@ async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread
     .filter((s) => !isBlocked(s.name))
   if (pool.length === 0) return null
 
-  const weighted = pool.map((s) => ({
-    name: s.name,
-    score: Math.max(0.01, s.score) * getMultiplier(s.name),
-  }))
+  const weighted = pool
+    .map((s) => ({
+      name: s.name,
+      score: Math.max(0.01, s.score) * getMultiplier(s.name),
+    }))
+    .sort((a, b) => b.score - a.score)
 
-  const chosen = weightedPick(weighted)
-  if (!chosen) return null
-
-  const ytVideo = await searchTrack(chosen.name)
-  if (!ytVideo) return null
-
-  return {
-    videoId: ytVideo.videoId,
-    title: ytVideo.title,
-    artist: chosen.name,
-    genre: "",
-    country: "",
-    duration: ytVideo.duration,
-    source: "similar",
-    similarTo: currentAnchor.name,
-    hopsFromAnchor: 1,
-  }
+  return await tryResolveWithFallback(weighted, async (name) => {
+    const ytVideo = await searchTrack(name)
+    if (!ytVideo) return null
+    return {
+      videoId: ytVideo.videoId,
+      title: ytVideo.title,
+      artist: name,
+      genre: "",
+      country: "",
+      duration: ytVideo.duration,
+      source: "similar",
+      similarTo: currentAnchor.name,
+      hopsFromAnchor: 1,
+    }
+  })
 }
 
 async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
@@ -288,8 +317,8 @@ async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): P
 
   await expandArtist(anchorId).catch(() => {})
 
-  const maxHops = spreadToHops(currentSpread)
-  const neighborhood = getNeighborhood(anchorId, maxHops)
+  const cfg = getSpreadConfig(currentSpread)
+  const neighborhood = getNeighborhood(anchorId, cfg.maxHops, cfg.minScore)
   if (neighborhood.size === 0) return null
 
   const ids = [...neighborhood.keys()]
@@ -308,25 +337,26 @@ async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): P
   }
   if (pool.length === 0) return null
 
-  const chosen = weightedPick(pool)
-  if (!chosen) return null
+  const sorted = pool.sort((a, b) => b.score - a.score)
 
-  void expandArtist(chosen.id).catch(() => {})
-
-  const ytVideo = await searchTrack(chosen.name)
-  if (!ytVideo) return null
-
-  return {
-    videoId: ytVideo.videoId,
-    title: ytVideo.title,
-    artist: chosen.name,
-    genre: chosen.genre,
-    country: chosen.country,
-    duration: ytVideo.duration,
-    source: "similar",
-    similarTo: currentAnchor.name,
-    hopsFromAnchor: chosen.hops,
-  }
+  return await tryResolveWithFallback(sorted, async (name) => {
+    const candidate = sorted.find((c) => c.name === name)
+    if (!candidate) return null
+    void expandArtist(candidate.id).catch(() => {})
+    const ytVideo = await searchTrack(name)
+    if (!ytVideo) return null
+    return {
+      videoId: ytVideo.videoId,
+      title: ytVideo.title,
+      artist: name,
+      genre: candidate.genre,
+      country: candidate.country,
+      duration: ytVideo.duration,
+      source: "similar",
+      similarTo: currentAnchor.name,
+      hopsFromAnchor: candidate.hops,
+    }
+  })
 }
 
 async function findByGenreDecade(
@@ -337,13 +367,14 @@ async function findByGenreDecade(
   const seedIds = getArtistsInGenre(genre)
   if (seedIds.length === 0) return null
 
+  const cfg = getSpreadConfig(spreadLevel)
   const pool = new Map<number, { hops: number; aggregateScore: number }>()
   for (const id of seedIds) pool.set(id, { hops: 0, aggregateScore: 1 })
 
-  if (spreadLevel !== "narrow") {
-    const hopBudget = spreadLevel === "medium" ? 1 : 2
+  if (spreadLevel !== "narrow" || cfg.minScore > 0) {
+    const hopBudget = cfg.maxHops
     for (const seedId of seedIds) {
-      const expanded = getNeighborhood(seedId, hopBudget as 1 | 2)
+      const expanded = getNeighborhood(seedId, hopBudget, cfg.minScore)
       for (const [id, info] of expanded) {
         const existing = pool.get(id)
         if (!existing || info.aggregateScore > existing.aggregateScore) {
@@ -385,23 +416,24 @@ async function findByGenreDecade(
   }
   if (candidates.length === 0) return null
 
-  const chosen = weightedPick(candidates)
-  if (!chosen) return null
+  const sorted = candidates.sort((a, b) => b.score - a.score)
 
-  void expandArtist(chosen.id).catch(() => {})
-
-  const ytVideo = await searchTrack(chosen.name)
-  if (!ytVideo) return null
-
-  return {
-    videoId: ytVideo.videoId,
-    title: ytVideo.title,
-    artist: chosen.name,
-    genre: chosen.genre || genre,
-    country: chosen.country,
-    duration: ytVideo.duration,
-    source: chosen.hops === 0 ? "library" : "similar",
-  }
+  return await tryResolveWithFallback(sorted, async (name) => {
+    const candidate = sorted.find((c) => c.name === name)
+    if (!candidate) return null
+    void expandArtist(candidate.id).catch(() => {})
+    const ytVideo = await searchTrack(name)
+    if (!ytVideo) return null
+    return {
+      videoId: ytVideo.videoId,
+      title: ytVideo.title,
+      artist: name,
+      genre: candidate.genre || genre,
+      country: candidate.country,
+      duration: ytVideo.duration,
+      source: candidate.hops === 0 ? "library" : "similar",
+    }
+  })
 }
 
 export async function selectNextTrack(): Promise<ResolvedTrack | null> {
@@ -440,7 +472,7 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
   return null
 }
 
-export async function prefetchQueue(maxAttempts = 20): Promise<void> {
+export async function prefetchQueue(maxAttempts = 25): Promise<void> {
   let attempts = 0
   while (getQueueSize() < config.prefetchThreshold && attempts < maxAttempts) {
     attempts++
@@ -451,7 +483,7 @@ export async function prefetchQueue(maxAttempts = 20): Promise<void> {
       enqueue(track)
     } catch (err: any) {
       console.warn("Prefetch error:", err.message)
-      break
+      // continue instead of break — individual YT failures shouldn't stop the whole pipeline
     }
   }
 }
@@ -484,7 +516,16 @@ export function getAvailableGenres(): string[] {
   for (const artist of getAllArtists()) {
     for (const g of artist.genres) set.add(g)
   }
-  return [...set].sort()
+  const filtered = filterCanonical([...set])
+  return filtered.length > 0 ? filtered.sort() : [...CANONICAL_GENRES]
+}
+
+export async function selectRandomGenre(): Promise<string> {
+  const allGenres = await fetchGenresFromMA()
+  if (allGenres.length === 0) return currentGenre
+  const pick = allGenres[Math.floor(Math.random() * allGenres.length)]
+  if (!pick) return currentGenre
+  return pick
 }
 
 export async function fetchGenresFromMA(): Promise<string[]> {
@@ -492,13 +533,15 @@ export async function fetchGenresFromMA(): Promise<string[]> {
   if (genresPromise) return genresPromise
   genresPromise = (async () => {
     try {
-      const result = await runAdapter("genres", [])
-      const genres = (result?.genres?.length ? result.genres : getAvailableGenres()) as string[]
-      cachedGenres = genres
-      return genres
+      const result = await runAdapter("browse-genres", [])
+      const raw = (result?.genres?.length ? result.genres : []) as string[]
+      const genres = raw.length > 0 ? filterCanonical(raw) : CANONICAL_GENRES
+      cachedGenres = [...genres]
+      console.log(`Fetched ${genres.length} canonical genres from MA (from ${raw.length} raw)`)
+      return cachedGenres
     } catch (err) {
       console.warn("Failed to fetch genres from MA:", err)
-      const fallback = getAvailableGenres()
+      const fallback = [...CANONICAL_GENRES]
       cachedGenres = fallback
       return fallback
     } finally {

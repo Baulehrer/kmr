@@ -23,7 +23,7 @@ function trackMaError(message: string): void {
 }
 
 const ADAPTER_TIMEOUT_MS = 30_000
-const DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const DETAIL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 let nextSlotAt = 0
 
@@ -57,6 +57,7 @@ export async function runAdapter(command: string, args: string[]): Promise<any> 
     if (exitCode !== 0) {
       const msg = `Scrapling adapter failed (exit ${exitCode}): ${stderr.slice(-200)}`
       trackMaError(msg)
+      nextSlotAt += 5000 // backoff 5s after error to throttle retries
       throw new Error(msg)
     }
 
@@ -119,7 +120,7 @@ export async function getArtistDetail(maId: number): Promise<MAArtistDetail | nu
     formedIn: row.formed_in || null,
   })
 
-  if (cached && cached.location && Date.now() - cached.updated_at < DETAIL_CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.updated_at < DETAIL_CACHE_TTL_MS) {
     return fromRow(cached)
   }
 

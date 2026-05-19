@@ -12,6 +12,7 @@ import {
   markPlaying,
   getAvailableGenres,
   fetchGenresFromMA,
+  selectRandomGenre,
   getMode,
   setMode,
   getAnchor,
@@ -90,6 +91,7 @@ const ALLOWED_METHODS: Record<string, string[]> = {
   "/api/radio/anchor": ["POST", "DELETE"],
   "/api/radio/spread": ["POST"],
   "/api/radio/genre": ["POST"],
+  "/api/radio/random-genre": ["POST"],
   "/api/radio/decades": ["POST"],
   "/api/radio/jump": ["POST"],
   "/api/decades": ["GET"],
@@ -306,6 +308,17 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
         return Response.json({ error: "Missing genre" }, { status: 400 })
       }
       setGenre(body.genre)
+      broadcastState()
+      await playNextNow()
+      return Response.json({ genre: getCurrentGenre() })
+    }
+
+    case "/api/radio/random-genre": {
+      const randomGenre = await selectRandomGenre()
+      if (!randomGenre || randomGenre === getCurrentGenre()) {
+        return Response.json({ genre: getCurrentGenre() })
+      }
+      setGenre(randomGenre)
       broadcastState()
       await playNextNow()
       return Response.json({ genre: getCurrentGenre() })
