@@ -53,6 +53,7 @@ body {
   margin-bottom: 20px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
+  position: relative;
 }
 
 .header h1 {
@@ -431,6 +432,13 @@ body {
   to { transform: rotate(360deg); }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .vinyl-disc.spinning .vinyl-art,
+  .vinyl-disc.spinning .vinyl-grooves {
+    animation: none;
+  }
+}
+
 .hero-meta {
   text-align: center;
   display: flex;
@@ -600,10 +608,6 @@ body {
   gap: 6px;
   font-size: 0.85rem;
   color: var(--text-secondary);
-}
-
-.volume-wrap input[type="range"] {
-  width: 80px;
 }
 
 .volume-wrap input[type="range"] {

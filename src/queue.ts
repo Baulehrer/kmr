@@ -14,9 +14,10 @@ function pushRecent(artist: string): void {
 
 export function initRecentArtists(maxRecent: number): void {
   recentArtists.length = 0
+  // Fetch more than maxRecent to account for deduplication
   const rows = db
     .query("SELECT artist FROM history ORDER BY played_at DESC LIMIT ?")
-    .all(maxRecent * 4) as Pick<HistoryRow, "artist">[]
+    .all(maxRecent * 3) as Pick<HistoryRow, "artist">[]
   for (const r of rows) {
     if (!r.artist) continue
     const key = normalizeName(r.artist)
@@ -29,7 +30,7 @@ export function initRecentArtists(maxRecent: number): void {
 export function isRecentArtist(artist: string, maxRecent: number): boolean {
   if (maxRecent <= 0) return false
   const key = normalizeName(artist)
-  const idx = recentArtists.lastIndexOf(key)
+  const idx = recentArtists.indexOf(key)
   if (idx === -1) return false
   return recentArtists.length - idx <= maxRecent
 }

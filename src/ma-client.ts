@@ -8,6 +8,20 @@ export { parseGenre, matchesGenre } from "./genre"
 export const VENV_PYTHON = import.meta.dir + "/../.venv/bin/python3"
 export const ADAPTER_SCRIPT = import.meta.dir + "/scrapling_adapter.py"
 
+let lastMaError: { message: string; at: number } | null = null
+
+export function getLastMaError(): { message: string; at: number } | null {
+  return lastMaError
+}
+
+export function clearLastMaError(): void {
+  lastMaError = null
+}
+
+function trackMaError(message: string): void {
+  lastMaError = { message: message.slice(0, 300), at: Date.now() }
+}
+
 const ADAPTER_TIMEOUT_MS = 30_000
 const DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
@@ -41,7 +55,9 @@ export async function runAdapter(command: string, args: string[]): Promise<any> 
     ])
 
     if (exitCode !== 0) {
-      throw new Error(`Scrapling adapter failed (exit ${exitCode}): ${stderr.slice(-200)}`)
+      const msg = `Scrapling adapter failed (exit ${exitCode}): ${stderr.slice(-200)}`
+      trackMaError(msg)
+      throw new Error(msg)
     }
 
     return JSON.parse(stdout.trim())
@@ -66,7 +82,9 @@ export async function searchArtist(name: string): Promise<MASearchResult | null>
 
   const result = await runAdapter("search", [name])
   if (result.error || result.status !== 200 || !result.parsed) {
-    console.warn(`MA search failed for "${name}": ${result.error || `HTTP ${result.status}`}`)
+    const msg = `MA search failed for "${name}": ${result.error || `HTTP ${result.status}`}`
+    console.warn(msg)
+    trackMaError(msg)
     return null
   }
 
@@ -108,6 +126,7 @@ export async function getArtistDetail(maId: number): Promise<MAArtistDetail | nu
   const bandName = cached?.name || ""
   const result = await runAdapter("detail", [String(maId), bandName])
   if (result.error || result.status !== 200) {
+    trackMaError(`MA detail failed for ID ${maId}: ${result.error || `HTTP ${result.status}`}`)
     return cached ? fromRow(cached) : null
   }
 
@@ -144,7 +163,9 @@ export async function getSimilarArtists(maId: number): Promise<SimilarArtist[]> 
 
   const result = await runAdapter("similar", [String(maId)])
   if (result.error || result.status !== 200 || !result.parsed) {
-    console.warn(`MA similar failed for ID ${maId}: ${result.error || `HTTP ${result.status}`}`)
+    const msg = `MA similar failed for ID ${maId}: ${result.error || `HTTP ${result.status}`}`
+    console.warn(msg)
+    trackMaError(msg)
     return []
   }
 

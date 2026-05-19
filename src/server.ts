@@ -40,21 +40,12 @@ import type { ServerWebSocket, Server } from "bun"
 import { getFullGraph } from "./graph"
 import { recordLike, recordDislike, getFeedback, listFeedback } from "./feedback"
 import config from "./radio.config"
+import { getLastMaError } from "./ma-client"
 
 import indexHtml from "../frontend/index.html"
 
 const startedAt = Date.now()
 const clients = new Set<ServerWebSocket>()
-let lastMaError: { message: string; at: number } | null = null
-
-const origConsoleWarn = console.warn.bind(console)
-console.warn = (...args: unknown[]) => {
-  const msg = args.map(String).join(" ")
-  if (/MA (search|similar|detail) failed|Scrapling adapter failed|Failed to fetch genres/.test(msg)) {
-    lastMaError = { message: msg.slice(0, 300), at: Date.now() }
-  }
-  origConsoleWarn(...args)
-}
 
 function broadcast(type: string, payload: Record<string, unknown>): void {
   const msg = JSON.stringify({ type, ...payload })
@@ -142,12 +133,14 @@ async function handlePlayNext(): Promise<Response> {
   return Response.json({ current: getCurrentTrack() })
 }
 
-async function readArtistFromBody(req: Request, current: () => string | null): Promise<string | null> {
+async function readArtistFromBody(req: Request): Promise<string | null> {
   try {
     const body = (await req.json()) as { artist?: string }
     if (body?.artist) return body.artist
-  } catch {}
-  return current()
+  } catch {
+    return null // invalid JSON
+  }
+  return null
 }
 
 function buildHealth() {
@@ -173,7 +166,7 @@ function buildHealth() {
     spread: getSpread(),
     decades: getDecades(),
     cache: counts,
-    lastMaError,
+    lastMaError: getLastMaError(),
   }
 }
 
@@ -241,7 +234,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
 
     case "/api/radio/like":
     case "/api/radio/dislike": {
-      const artist = await readArtistFromBody(req, () => getCurrentTrack()?.artist ?? null)
+      const artist = (await readArtistFromBody(req)) ?? getCurrentTrack()?.artist ?? null
       if (!artist) return Response.json({ error: "No artist" }, { status: 400 })
       const entry = path.endsWith("like") ? recordLike(artist) : recordDislike(artist)
       return Response.json({ feedback: entry })

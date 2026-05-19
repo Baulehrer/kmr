@@ -87,3 +87,10 @@ export function spreadToHops(spread: Spread): 1 | 2 | 3 {
   if (spread === "medium") return 2
   return 3
 }
+
+/** Minimum similarity score (0-100) for music-map results per spread level */
+export function spreadToMusicMapThreshold(spread: Spread): number {
+  if (spread === "narrow") return 80
+  if (spread === "medium") return 50
+  return 10
+}

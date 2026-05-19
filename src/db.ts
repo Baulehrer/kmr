@@ -129,6 +129,7 @@ db.run("CREATE INDEX IF NOT EXISTS idx_history_played_at ON history(played_at DE
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_edges_from ON graph_edges(from_ma_id)")
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_edges_to ON graph_edges(to_ma_id)")
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_nodes_decade ON graph_nodes(decade)")
+db.run("CREATE INDEX IF NOT EXISTS idx_graph_nodes_genre ON graph_nodes(genre)")
 db.run("CREATE INDEX IF NOT EXISTS idx_mm_similar_from ON mm_similar(from_slug)")
 
 export interface MaArtistRow {

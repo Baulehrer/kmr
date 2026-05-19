@@ -8,7 +8,7 @@ import { searchTrack } from "./yt-client"
 import { parseGenre, matchesGenre, matchesDecade } from "./genre"
 import { getMultiplier, isBlocked } from "./feedback"
 import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor } from "./types"
-import { spreadToHops, ALL_DECADES } from "./types"
+import { spreadToHops, spreadToMusicMapThreshold, ALL_DECADES } from "./types"
 import db, { type SettingsRow } from "./db"
 import config from "./radio.config"
 
@@ -241,12 +241,6 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
     source: "similar",
     similarTo: sourceNode?.name,
   }
-}
-
-function spreadToMusicMapThreshold(s: Spread): number {
-  if (s === "narrow") return 80
-  if (s === "medium") return 50
-  return 10
 }
 
 async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
