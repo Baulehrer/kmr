@@ -89,8 +89,13 @@ export function filterCanonical(rawGenres: string[]): string[] {
 export function matchesGenre(artistGenres: string | string[], targetGenre: string): boolean {
   if (!targetGenre) return true
   const normalized = targetGenre.toLowerCase()
+  const targetCanonical = toCanonicalGenre(targetGenre)
   const list = Array.isArray(artistGenres) ? artistGenres : parseGenre(artistGenres)
-  return list.some((g) => g.toLowerCase().includes(normalized))
+  return list.some((g) => {
+    if (g.toLowerCase().includes(normalized)) return true
+    const artistCanonical = toCanonicalGenre(g)
+    return !!targetCanonical && artistCanonical === targetCanonical
+  })
 }
 
 export function normalizeName(name: string): string {

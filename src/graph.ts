@@ -3,18 +3,24 @@ import { getSimilarArtists, getCachedArtistByMaId, getArtistDetail } from "./ma-
 import { matchesGenre, parseDecade } from "./genre"
 import { getAllArtists } from "./library"
 
-const upsertNode = db.prepare(
-  "INSERT OR REPLACE INTO graph_nodes (ma_id, name, genre, country, updated_at, formed_in, decade, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-)
+const upsertNode = db.prepare(`
+  INSERT INTO graph_nodes (ma_id, name, genre, country, updated_at, formed_in, decade, source)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(ma_id) DO UPDATE SET
+    name = COALESCE(NULLIF(excluded.name, ''), graph_nodes.name),
+    genre = COALESCE(NULLIF(excluded.genre, ''), graph_nodes.genre),
+    country = COALESCE(NULLIF(excluded.country, ''), graph_nodes.country, ''),
+    updated_at = excluded.updated_at,
+    formed_in = COALESCE(NULLIF(excluded.formed_in, ''), NULLIF(graph_nodes.formed_in, '')),
+    decade = COALESCE(NULLIF(excluded.decade, ''), NULLIF(graph_nodes.decade, '')),
+    source = COALESCE(NULLIF(excluded.source, ''), graph_nodes.source, 'ma')
+`)
 const upsertEdge = db.prepare(
   "INSERT OR REPLACE INTO graph_edges (from_ma_id, to_ma_id, score) VALUES (?, ?, ?)"
 )
 
 export async function expandArtist(maId: number): Promise<void> {
-  const hasEdges = db
-    .query("SELECT 1 FROM graph_edges WHERE from_ma_id = ? LIMIT 1")
-    .get(maId)
-  if (hasEdges) return
+  if (hasGraphEdges(maId)) return
 
   const similar = await getSimilarArtists(maId)
   let detail = getCachedArtistByMaId(maId)
@@ -44,6 +50,13 @@ export async function expandArtist(maId: number): Promise<void> {
     }
   })
   tx()
+}
+
+export function hasGraphEdges(maId: number): boolean {
+  const row = db
+    .query("SELECT 1 FROM graph_edges WHERE from_ma_id = ? LIMIT 1")
+    .get(maId)
+  return !!row
 }
 
 export function upsertGraphNode(node: {

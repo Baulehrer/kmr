@@ -19,13 +19,17 @@ const NON_MUSIC_KEYWORDS = [
 
 const ALBUM_TRAP_KEYWORDS = [" - single", " - album", " - ep"]
 
+export interface SearchTrackOptions {
+  excludeVideoIds?: Iterable<string>
+}
+
 /**
  * Score a YouTube video for music track suitability.
  * Positive signals increase score, negative signals decrease it.
  * Returns a score. Videos with score < 0 are disqualified.
  * Higher score = better match.
  */
-function scoreVideo(title: string, channelName: string, artist: string): number {
+export function scoreVideo(title: string, channelName: string, artist: string): number {
   const lower = `${title} ${channelName}`.toLowerCase()
   const artistLower = artist.toLowerCase()
 
@@ -40,7 +44,7 @@ function scoreVideo(title: string, channelName: string, artist: string): number 
   else return -50 // not about this artist at all
 
   // Channel signals
-  if (channelName.includes(" - Topic")) score += 30
+  if (lower.includes(" - topic")) score += 30
 
   // Title signals
   const titleLower = title.toLowerCase()
@@ -57,64 +61,64 @@ function scoreVideo(title: string, channelName: string, artist: string): number 
   return score
 }
 
-function isLikelyMusic(title: string, channelName: string, artist: string): boolean {
-  return scoreVideo(title, channelName, artist) >= 0
-}
-
 export async function getClient(): Promise<Innertube> {
   if (yt) return yt
   if (!clientPromise) {
-    clientPromise = Innertube.create({ generate_session_locally: true }).then((c) => {
-      yt = c
-      console.log("YouTube Innertube session created")
-      return c
-    })
+    clientPromise = Innertube.create({ generate_session_locally: true })
+      .then((c) => {
+        yt = c
+        console.log("YouTube Innertube session created")
+        return c
+      })
+      .catch((err) => {
+        clientPromise = null
+        throw err
+      })
   }
   return clientPromise
 }
 
-function pickBestVideo(videos: any[], artist: string): YTVideo | null {
-  let best: YTVideo | null = null
-  let bestScore = -Infinity
-  let fallback: YTVideo | null = null
+export function pickBestVideo(videos: any[], artist: string, options: SearchTrackOptions = {}): YTVideo | null {
+  const excluded = new Set(options.excludeVideoIds ?? [])
+  const ranked: Array<{ video: YTVideo; score: number }> = []
 
   for (const video of videos) {
     const videoId = video?.id
     if (!videoId) continue
+    if (excluded.has(videoId)) continue
     const duration = parseDuration(video?.duration?.text)
     if (duration < MIN_DURATION || duration > MAX_DURATION) continue
     const title = video?.title?.text || artist
     const channelName = video?.author?.name || ""
     const candidate: YTVideo = { videoId, title, channelName, duration }
     const score = scoreVideo(title, channelName, artist)
-    if (score < 0) {
-      if (!fallback) fallback = candidate
-      continue
-    }
-    if (score > bestScore) {
-      bestScore = score
-      best = candidate
-    }
+    if (score < 0) continue
+    ranked.push({ video: candidate, score })
   }
 
-  return best ?? fallback
+  ranked.sort((a, b) => b.score - a.score)
+  return ranked[0]?.video ?? null
 }
 
-async function search(query: string, artist: string): Promise<YTVideo | null> {
+async function search(query: string, artist: string, options: SearchTrackOptions): Promise<YTVideo | null> {
   const client = await getClient()
   const results = await client.search(query, { type: "video" })
   const videos = results.videos
   if (!videos || videos.length === 0) return null
-  return pickBestVideo(videos as any[], artist)
+  return pickBestVideo(videos as any[], artist, options)
 }
 
-export async function searchTrack(artist: string, track?: string): Promise<YTVideo | null> {
+export async function searchTrack(
+  artist: string,
+  track?: string,
+  options: SearchTrackOptions = {},
+): Promise<YTVideo | null> {
   const queries = track
     ? [`${artist} ${track}`, `${artist} ${track} official`]
     : [`${artist} song`, `${artist} official audio`, `${artist} topic`]
   for (const q of queries) {
     try {
-      const found = await search(q, artist)
+      const found = await search(q, artist, options)
       if (found) return found
     } catch (err: any) {
       console.warn(`YT search error for "${q}":`, err?.message || err)

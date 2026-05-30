@@ -4,6 +4,8 @@ import {
   dequeue,
   getQueue,
   getQueueSize,
+  getQueuedVideoIds,
+  getRecentVideoIds,
   clearQueue,
   isDuplicate,
   isRecentArtist,
@@ -47,6 +49,12 @@ describe("queue ops", () => {
     const q = getQueue()
     q.length = 0
     expect(getQueueSize()).toBe(1)
+  })
+
+  test("exposes queued video IDs", () => {
+    enqueue(track({ videoId: "a", artist: "A" }))
+    enqueue(track({ videoId: "b", artist: "B" }))
+    expect(getQueuedVideoIds()).toEqual(["a", "b"])
   })
 })
 
@@ -96,5 +104,13 @@ describe("initRecentArtists", () => {
     initRecentArtists(10)
     expect(isRecentArtist("X", 10)).toBe(true)
     expect(isRecentArtist("Y", 10)).toBe(true)
+  })
+
+  test("returns recent video IDs from history", () => {
+    addToHistory(track({ videoId: "rv1", artist: "RV1" }))
+    addToHistory(track({ videoId: "rv2", artist: "RV2" }))
+    const ids = getRecentVideoIds(100)
+    expect(ids).toContain("rv1")
+    expect(ids).toContain("rv2")
   })
 })

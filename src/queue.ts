@@ -71,6 +71,10 @@ export function getQueueSize(): number {
   return queue.length
 }
 
+export function getQueuedVideoIds(): string[] {
+  return queue.map((item) => item.track.videoId)
+}
+
 export function clearQueue(): void {
   queue.length = 0
 }
@@ -125,4 +129,11 @@ export function getHistory(limit = 50): ResolvedTrack[] {
     similarTo: r.similar_to || undefined,
     hopsFromAnchor: r.hops_from_anchor ?? undefined,
   }))
+}
+
+export function getRecentVideoIds(limit = 100): string[] {
+  const rows = db
+    .query("SELECT video_id FROM history ORDER BY played_at DESC LIMIT ?")
+    .all(limit) as Pick<HistoryRow, "video_id">[]
+  return rows.map((r) => r.video_id).filter(Boolean)
 }

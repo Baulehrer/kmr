@@ -36,6 +36,12 @@ describe("matchesGenre", () => {
   test("empty target → match all", () => {
     expect(matchesGenre("anything", "")).toBe(true)
   })
+
+  test("matches raw genres against canonical composite targets", () => {
+    expect(matchesGenre("Doom Metal", "Doom/Stoner/Sludge")).toBe(true)
+    expect(matchesGenre("Industrial Metal", "Electronic/Industrial")).toBe(true)
+    expect(matchesGenre("Melodic Metalcore", "Metalcore/Deathcore")).toBe(true)
+  })
 })
 
 describe("normalizeName", () => {

@@ -1,7 +1,7 @@
 services:
   kmr:
     build: .
-    image: kmr:0.5
+    image: kmr:1.0
     container_name: kmr
     restart: unless-stopped
     ports:

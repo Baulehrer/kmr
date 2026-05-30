@@ -1,11 +1,11 @@
 import { getAllArtists, getArtist, updateArtist } from "./library"
 import { searchArtist, runAdapter } from "./ma-client"
 import { resolveTrack } from "./resolver"
-import { expandArtist, getArtistsInGenre, getGraphNode, getGraphNodeByName, getSimilarWithScores, getNeighborhood, getNodesByIds } from "./graph"
+import { expandArtist, getArtistsInGenre, getGraphNode, getGraphNodeByName, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
 import { getMusicMapSimilar } from "./musicmap-client"
-import { enqueue, getQueueSize, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
+import { enqueue, getQueueSize, getQueuedVideoIds, getRecentVideoIds, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
 import { searchTrack } from "./yt-client"
-import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
+import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre, normalizeName } from "./genre"
 import { getMultiplier, isBlocked } from "./feedback"
 import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig } from "./types"
 import { spreadToHops, spreadToMusicMapThreshold, ALL_DECADES, getSpreadConfig } from "./types"
@@ -26,6 +26,15 @@ const STORED_ANCHOR = loadSetting("anchor")
 const STORED_SPREAD = loadSetting("spread")
 const STORED_GENRE = loadSetting("genre")
 const STORED_DECADES = loadSetting("decades")
+const STORED_ANCHOR_FREQUENCY = loadSetting("anchorFrequency")
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function resetBandMix(): void {
+  bandPickWindow = []
+}
 
 let mode: Mode = STORED_MODE === "band" || STORED_MODE === "genre" ? STORED_MODE : "genre"
 let anchor: Anchor | null = (() => {
@@ -56,7 +65,14 @@ let pausedAt = 0
 
 let genresPromise: Promise<string[]> | null = null
 let cachedGenres: string[] | null = null
-let anchorFrequency: number = parseInt(loadSetting("anchorFrequency") || "0", 10)
+const parsedAnchorFrequency = Number.parseInt(STORED_ANCHOR_FREQUENCY || "0", 10)
+let anchorFrequency: number = Number.isFinite(parsedAnchorFrequency) ? clampPercent(parsedAnchorFrequency) : 0
+const FIND_LIBRARY_LOOKUP_LIMIT = 50
+let prefetchInFlight: Promise<void> | null = null
+type BandPick = "anchor" | "similar"
+let bandPickWindow: BandPick[] = []
+const hydratedAnchorNeighborhoods = new Set<string>()
+const anchorHydrationRetryAt = new Map<string, number>()
 
 export function getCurrentGenre(): string {
   return currentGenre
@@ -80,6 +96,7 @@ export function setMode(next: Mode): void {
   mode = next
   saveSetting("mode", next)
   console.log(`Mode set to: ${next}`)
+  resetBandMix()
   clearQueue()
 }
 
@@ -92,6 +109,7 @@ export function setAnchor(next: Anchor | null): void {
   if (next) saveSetting("anchor", JSON.stringify(next))
   else db.run("DELETE FROM settings WHERE key = ?", ["anchor"])
   console.log(`Anchor set to: ${next?.name ?? "(none)"}`)
+  resetBandMix()
   clearQueue()
 }
 
@@ -104,6 +122,7 @@ export function setSpread(next: Spread): void {
   spread = next
   saveSetting("spread", next)
   console.log(`Spread set to: ${next}`)
+  resetBandMix()
   clearQueue()
 }
 
@@ -132,7 +151,7 @@ export function getRadioState() {
 
 export function getCurrentTrack(): (ResolvedTrack & { progress: number }) | null {
   if (!currentTrack) return null
-  const reference = isPlaying ? Date.now() : pausedAt || playbackStartedAt
+  const reference = isPlaying ? Date.now() : pausedAt > 0 ? pausedAt : playbackStartedAt
   const progress = Math.max(0, Math.floor((reference - playbackStartedAt) / 1000))
   return { ...currentTrack, progress }
 }
@@ -146,11 +165,12 @@ export function getAnchorFrequency(): number {
 }
 
 export function setAnchorFrequency(next: number): void {
-  const clamped = Math.max(0, Math.min(100, Math.round(next)))
+  const clamped = clampPercent(next)
   if (anchorFrequency === clamped) return
   anchorFrequency = clamped
   saveSetting("anchorFrequency", String(clamped))
   console.log(`Anchor frequency set to: ${clamped}%`)
+  resetBandMix()
   clearQueue()
 }
 
@@ -171,6 +191,59 @@ function weightedPick<T extends { score: number }>(items: T[]): T | null {
   return items[items.length - 1] ?? null
 }
 
+function weightedSample<T extends { score: number }>(items: T[], count: number): T[] {
+  const pool = [...items]
+  const out: T[] = []
+  while (pool.length > 0 && out.length < count) {
+    const picked = weightedPick(pool)
+    if (!picked) break
+    out.push(picked)
+    pool.splice(pool.indexOf(picked), 1)
+  }
+  return out
+}
+
+export function chooseBandSource(anchorPercent: number, recent: BandPick[], windowSize = config.anchorMixWindow): BandPick {
+  const percent = clampPercent(anchorPercent)
+  if (percent <= 0) return "similar"
+  if (percent >= 100) return "anchor"
+
+  const usableWindowSize = Math.max(2, windowSize)
+  const window = recent.slice(-(usableWindowSize - 1))
+  const nextSize = window.length + 1
+  const targetAnchors = Math.ceil((percent / 100) * nextSize)
+  const anchorCount = window.filter((pick) => pick === "anchor").length
+  return anchorCount < targetAnchors ? "anchor" : "similar"
+}
+
+function trackBandPick(track: ResolvedTrack): void {
+  if (mode !== "band" || !anchor) return
+  const pick: BandPick = track.hopsFromAnchor === 0 ? "anchor" : "similar"
+  bandPickWindow.push(pick)
+  const max = Math.max(2, config.anchorMixWindow)
+  while (bandPickWindow.length > max) bandPickWindow.shift()
+}
+
+function getAvoidVideoIds(): Set<string> {
+  const ids = new Set<string>(getQueuedVideoIds())
+  const historyLimit = Math.max(config.repeatProtection * 3, config.queueSize * 3, 25)
+  for (const id of getRecentVideoIds(historyLimit)) ids.add(id)
+  if (currentTrack) ids.add(currentTrack.videoId)
+  return ids
+}
+
+function isAnchorTrack(track: ResolvedTrack): boolean {
+  return mode === "band"
+    && !!anchor
+    && track.hopsFromAnchor === 0
+    && normalizeName(track.artist) === normalizeName(anchor.name)
+}
+
+function isDuplicateForPlayback(track: ResolvedTrack): boolean {
+  if (!isAnchorTrack(track)) return isDuplicate(track, config.repeatProtection)
+  return getAvoidVideoIds().has(track.videoId)
+}
+
 interface FallbackCandidate {
   name: string
   [key: string]: unknown
@@ -178,7 +251,8 @@ interface FallbackCandidate {
 
 /**
  * Try resolving up to `count` candidates from the weighted-sorted pool via YouTube.
- * Fires all YT searches in parallel — whichever resolves first wins.
+ * Fires the YT searches in parallel and returns the first successful result in
+ * candidate order.
  * Returns the first successful ResolvedTrack, or null if all fail.
  */
 async function tryResolveWithFallback(
@@ -199,6 +273,7 @@ async function tryResolveWithFallback(
 async function findLibraryArtist(genre: string): Promise<Artist | null> {
   const candidates: Artist[] = []
   const fallback: Artist[] = []
+  let lookups = 0
 
   for (const artist of getAllArtists()) {
     if (isRecentArtist(artist.name, config.repeatProtection)) continue
@@ -207,24 +282,35 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
     if (artist.maId && artist.genres.length > 0) {
       if (matchesGenre(artist.genres, genre)) {
         candidates.push(artist)
+      } else {
+        fallback.push(artist)
       }
       continue
     }
 
+    if (lookups >= FIND_LIBRARY_LOOKUP_LIMIT) {
+      fallback.push(artist)
+      continue
+    }
+    lookups++
+
     try {
       const ma = await searchArtist(artist.name)
       if (ma && matchesGenre(ma.genre, genre)) {
+        const genres = filterCanonical(parseGenre(ma.genre))
         updateArtist(artist.name, {
           maId: ma.maId,
-          genres: filterCanonical(parseGenre(ma.genre)),
+          genres,
           country: ma.country,
         })
+        upsertGraphNode({ maId: ma.maId, name: ma.name, genre: ma.genre, country: ma.country })
         const updated = getArtist(artist.name)
         if (updated) candidates.push(updated)
       } else {
         fallback.push(artist)
       }
-    } catch {
+    } catch (err) {
+      console.warn("findLibraryArtist error for", artist.name, err)
       fallback.push(artist)
     }
   }
@@ -269,11 +355,13 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
 
   const sourceNode = getGraphNode(seedId)
 
-  return await tryResolveWithFallback(weighted, async (name) => {
+  const candidates = weightedSample(weighted, Math.max(1, config.ytResolveCandidates))
+  const excludeVideoIds = getAvoidVideoIds()
+
+  return await tryResolveWithFallback(candidates, async (name) => {
     const node = getGraphNodeByName(name)
     if (!node) return null
-    void expandArtist(node.ma_id).catch(() => {})
-    const ytVideo = await searchTrack(name)
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -306,8 +394,11 @@ async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread
     }))
     .sort((a, b) => b.score - a.score)
 
-  return await tryResolveWithFallback(weighted, async (name) => {
-    const ytVideo = await searchTrack(name)
+  const candidates = weightedSample(weighted, Math.max(1, config.ytResolveCandidates))
+  const excludeVideoIds = getAvoidVideoIds()
+
+  return await tryResolveWithFallback(candidates, async (name) => {
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -325,7 +416,7 @@ async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread
 
 /** Try to find a YouTube track for the anchor artist itself. */
 async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack | null> {
-  const ytVideo = await searchTrack(currentAnchor.name)
+  const ytVideo = await searchTrack(currentAnchor.name, undefined, { excludeVideoIds: getAvoidVideoIds() })
   if (!ytVideo) return null
   return {
     videoId: ytVideo.videoId,
@@ -340,28 +431,52 @@ async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack 
   }
 }
 
-async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
-  // Anchor frequency: when roll succeeds, try the anchor artist directly (works for any source)
-  if (anchorFrequency > 0) {
-    const maxAttempts = anchorFrequency >= 100 ? 3 : 1
-    if (anchorFrequency >= 100 || Math.random() * 100 < anchorFrequency) {
-      for (let i = 0; i < maxAttempts; i++) {
-        const anchorTrack = await resolveAnchorTrack(currentAnchor)
-        if (anchorTrack) return anchorTrack
+async function hydrateMaAnchorNeighborhood(anchorId: number, currentSpread: Spread, cfg: SpreadConfig): Promise<void> {
+  const key = `${anchorId}:${currentSpread}:${cfg.minScore}:${cfg.maxHops}`
+  if (hydratedAnchorNeighborhoods.has(key)) return
+
+  const retryAt = anchorHydrationRetryAt.get(key) ?? 0
+  if (retryAt > Date.now()) return
+
+  try {
+    await expandArtist(anchorId)
+
+    const budget = Math.max(0, config.maGraphExpansionBudget)
+    if (cfg.maxHops > 1 && budget > 0) {
+      const direct = [...getNeighborhood(anchorId, 1, cfg.minScore).entries()]
+        .sort((a, b) => b[1].aggregateScore - a[1].aggregateScore)
+        .map(([id]) => id)
+        .filter((id) => !hasGraphEdges(id))
+        .slice(0, budget)
+
+      for (const id of direct) {
+        try {
+          await expandArtist(id)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          console.warn(`MA graph expansion skipped for ${id}: ${message}`)
+        }
       }
     }
-  }
 
-  if (currentAnchor.source === "musicmap") {
-    return await findByMusicMapAnchor(currentAnchor, currentSpread)
+    hydratedAnchorNeighborhoods.add(key)
+  } catch (err) {
+    anchorHydrationRetryAt.set(key, Date.now() + 5 * 60 * 1000)
+    throw err
   }
+}
+
+async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
   if (currentAnchor.source !== "ma") return null
   const anchorId = parseInt(currentAnchor.sourceId, 10)
   if (!Number.isFinite(anchorId)) return null
 
-  await expandArtist(anchorId).catch(() => {})
-
   const cfg = getSpreadConfig(currentSpread)
+  await hydrateMaAnchorNeighborhood(anchorId, currentSpread, cfg).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`MA graph hydration failed for ${currentAnchor.name}: ${message}`)
+  })
+
   const neighborhood = getNeighborhood(anchorId, cfg.maxHops, cfg.minScore)
   if (neighborhood.size === 0) return null
 
@@ -382,12 +497,13 @@ async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): P
   if (pool.length === 0) return null
 
   const sorted = pool.sort((a, b) => b.score - a.score)
+  const candidates = weightedSample(sorted, Math.max(1, config.ytResolveCandidates))
+  const excludeVideoIds = getAvoidVideoIds()
 
-  return await tryResolveWithFallback(sorted, async (name) => {
+  return await tryResolveWithFallback(candidates, async (name) => {
     const candidate = sorted.find((c) => c.name === name)
     if (!candidate) return null
-    void expandArtist(candidate.id).catch(() => {})
-    const ytVideo = await searchTrack(name)
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -401,6 +517,24 @@ async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): P
       hopsFromAnchor: candidate.hops,
     }
   })
+}
+
+async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
+  const preferred = chooseBandSource(anchorFrequency, bandPickWindow, config.anchorMixWindow)
+  const allowAnchor = anchorFrequency > 0 && !isBlocked(currentAnchor.name)
+  const allowSimilar = anchorFrequency < 100
+  const tryAnchor = async () => (allowAnchor ? await resolveAnchorTrack(currentAnchor) : null)
+  const trySimilar = async () => {
+    if (!allowSimilar) return null
+    if (currentAnchor.source === "musicmap") return await findByMusicMapAnchor(currentAnchor, currentSpread)
+    return await findSimilarByMaAnchor(currentAnchor, currentSpread)
+  }
+
+  if (preferred === "anchor") {
+    return (await tryAnchor()) ?? (await trySimilar())
+  }
+
+  return (await trySimilar()) ?? (await tryAnchor())
 }
 
 async function findByGenreDecade(
@@ -461,12 +595,13 @@ async function findByGenreDecade(
   if (candidates.length === 0) return null
 
   const sorted = candidates.sort((a, b) => b.score - a.score)
+  const sampled = weightedSample(sorted, Math.max(1, config.ytResolveCandidates))
+  const excludeVideoIds = getAvoidVideoIds()
 
-  return await tryResolveWithFallback(sorted, async (name) => {
+  return await tryResolveWithFallback(sampled, async (name) => {
     const candidate = sorted.find((c) => c.name === name)
     if (!candidate) return null
-    void expandArtist(candidate.id).catch(() => {})
-    const ytVideo = await searchTrack(name)
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -516,20 +651,45 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
   return null
 }
 
-export async function prefetchQueue(maxAttempts = 25): Promise<void> {
+export async function selectPlayableTrack(maxAttempts = 10): Promise<ResolvedTrack | null> {
   let attempts = 0
-  while (getQueueSize() < config.prefetchThreshold && attempts < maxAttempts) {
+  while (attempts < maxAttempts) {
+    attempts++
+    const track = await selectNextTrack()
+    if (!track) return null
+    if (!isDuplicateForPlayback(track)) {
+      trackBandPick(track)
+      return track
+    }
+  }
+  return null
+}
+
+async function prefetchQueueInternal(maxAttempts = 25): Promise<void> {
+  const targetSize = Math.max(1, config.queueSize, config.prefetchThreshold)
+  let attempts = 0
+  while (getQueueSize() < targetSize && attempts < maxAttempts) {
     attempts++
     try {
       const track = await selectNextTrack()
       if (!track) break
-      if (isDuplicate(track, config.repeatProtection)) continue
+      if (isDuplicateForPlayback(track)) continue
       enqueue(track)
-    } catch (err: any) {
-      console.warn("Prefetch error:", err.message)
+      trackBandPick(track)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn("Prefetch error:", message)
       // continue instead of break — individual YT failures shouldn't stop the whole pipeline
     }
   }
+}
+
+export async function prefetchQueue(maxAttempts = 25): Promise<void> {
+  if (prefetchInFlight) return prefetchInFlight
+  prefetchInFlight = prefetchQueueInternal(maxAttempts).finally(() => {
+    prefetchInFlight = null
+  })
+  return prefetchInFlight
 }
 
 export function markPlaying(track: ResolvedTrack, logHistory = true): void {

@@ -1,136 +1,79 @@
-# KMR — Kaufis Metal Radio
+# KMR (Kaufis Metal Radio) — Version 1.0
 
-> Endloses Internetradio, das dich nicht zur Charts-Schleife verdammt. Du gibst eine Band oder ein Genre vor — KMR baut den Rest.
+Ein einfaches Webradio für Metal und verwandte Genres:
 
-Kein Account, keine Werbung, keine Algorithmen, die dich in deine eigene Blase einschließen. KMR liest die Musikwelt aus der Metal-Archives-Datenbank und music-map.com und sucht zu jedem Künstler ähnliche Bands. Wiedergegeben wird über die YouTube-Suche.
+- Band eingeben und ähnliche Künstler hören
+- Oder Genre + Jahrzehnt wählen
+- Läuft im Browser auf deinem eigenen Rechner
 
----
-
-## Was es kann
-
-### Zwei Modi
-
-- **Künstler-Modus** — Du tippst „Iron Maiden" ein, KMR setzt die Band als Anker und spielt von da an ähnliche Künstler. Ein Ähnlichkeits-Slider entscheidet, wie weit das Radio sich vom Anker entfernen darf (1, 2 oder 3 Hops im Ähnlichkeitsgraph).
-- **Genre-Modus** — Du wählst ein Genre aus der Metal-Archives-Taxonomie und (optional) eine oder mehrere Dekaden (70er, 80er, 90er, 2000er, 2010er, 2020er). Der Slider regelt, wie streng beim Genre geblieben wird.
-
-### Datenquellen
-
-- **Metal-Archives** — Genre-Taxonomie und „Recommended Bands" für alles, was Metal ist.
-- **music-map.com** — Ähnlichkeitsnetz für alle anderen Genres. Wer nicht in MA gelistet ist, wird automatisch hier nachgeschlagen (Pink Floyd, Radiohead, …).
-- **YouTube** — Audio-Quelle. Songs werden gezielt nach `<Künstler> song` / `<Künstler> official audio` gesucht und gegen Titel-Heuristiken gefiltert, damit TED-Talks, Interviews und Reaction-Videos nicht in der Queue landen.
-
-### Bedienung
-
-- **Vinyl-Carousel** — Aktueller Track als rotierende Schallplatte in der Mitte, History links, Queue rechts. Alle Discs sind anklickbar — zurück- oder vorspringen geht direkt per Klick.
-- **Tasten**: `Space` Play/Pause · `←` zurück · `→` skip
-- **Like / Dislike** — Eingriff in die Auswahlgewichte. Drei Net-Dislikes blockieren einen Künstler komplett.
-- **Drei Ansichten**: Vinyl (rotierend), Karten (Album-Cover-Look), Kompakt (Minimal)
-- **Zehn Themes**: Classic Metal · Midnight · Forest · Sunset · Lavender · Mono · Vapor · Paper · Terminal · Gold
-
-### Komfort
-
-- Mode, Anker, Genre, Dekaden und Slider werden persistiert — beim Neustart ist alles wie gehabt.
-- Wechselt du ein Setting, wird der aktuelle Track sofort durch einen passenden ersetzt; die Queue baut sich neu auf.
-- Eingebauter SQLite-Cache: Ähnlichkeitsabfragen kosten nur einmal Netzwerktraffic.
-
----
-
-## Schnellstart mit Docker
+## Installation (empfohlen): Docker
 
 ```bash
-git clone https://github.com/<dein-user>/kmr.git
+git clone https://github.com/Baulehrer/kmr.git
 cd kmr
 docker compose up -d
 ```
 
-Danach läuft KMR auf <http://localhost:3000>.
+Dann öffnen: <http://localhost:3000>
 
-Die Container-Variante kümmert sich um Bun, Python, das scrapling-venv und legt einen Daten-Volume `./data` an, in dem die SQLite-Cache-Datenbank liegt. So bleiben deine Likes, Anker und der Ähnlichkeitsgraph beim Neustart erhalten.
+Stoppen:
 
-### Konfiguration via Umgebungsvariablen
+```bash
+docker compose down
+```
 
-| Variable | Default | Bedeutung |
-|---|---|---|
-| `KMR_DB_PATH` | `./radio_cache.sqlite` (Container: `/data/radio_cache.sqlite`) | Pfad zur SQLite-Cache-Datei |
-| `KMR_LIBRARY_PATH` | `./artists` | Verzeichnis mit Künstler-Unterordnern (jeder Ordner = ein Library-Künstler) |
+Die Daten bleiben in `./data` erhalten (z. B. Cache und Verlauf).
 
----
-
-## Lokale Entwicklung
+## Nutzung ohne Docker (lokal)
 
 Voraussetzungen:
 
-- [Bun](https://bun.sh) ≥ 1.3
-- Python ≥ 3.11 mit `venv`
+- Bun (1.3 oder neuer)
+- Python 3.11+
+
+Start:
 
 ```bash
 bun install
-
-# Python-Helfer für die Scraper
 python3 -m venv .venv
 .venv/bin/pip install scrapling
-
-# Start
 bun start
-# oder mit HMR
-bun dev
 ```
 
-Tests:
+Dann öffnen: <http://localhost:3000>
 
-```bash
-bun test
-bun run typecheck
-```
+## Eigene Artists-Library (optional)
 
----
+Lege Ordner pro Band unter `artists/` an:
 
-## Library anlegen
-
-Die lokale Künstler-Bibliothek ist ein Fallback und Seed für den Random-Walk. Jeder Künstler ist einfach ein leerer Ordner unter `artists/`:
-
-```
+```text
 artists/
-├── Iron Maiden/
-├── Judas Priest/
-├── Black Sabbath/
-└── …
+  Iron Maiden/
+  Judas Priest/
+  Black Sabbath/
 ```
 
-Der Name des Ordners wird gegen Metal-Archives aufgelöst, Genre und Country werden gecacht.
+## Release als EXE/App (Windows, Linux, macOS)
 
----
+Ja, das geht grundsätzlich.
 
-## Roadmap
+Wichtig: KMR braucht neben dem Hauptprogramm auch Python + `scrapling`. Deshalb ist ein einzelnes "nur EXE"-File auf allen Plattformen nicht ganz trivial.
 
-### 0.5 (aktuell)
-- Band-Anker via Metal-Archives + music-map.com
-- Genre + Multi-Dekaden-Filter
-- Vinyl-Carousel mit klickbarer History/Queue
-- Drei Ansichten, zehn Themes
-- Persistenter State über Neustarts
+Praktischer Weg für Releases:
 
-### 0.6 (next)
-- Bugfixing-Runde
-- **Lyric-Support** — Liedtexte direkt im Player anzeigen
-- Gnoosic-Integration als dritte Ähnlichkeitsquelle
+1. Pro Plattform ein Paket bauen (`win`, `linux`, `mac`)
+2. Darin enthalten:
+   - ausführbare Datei
+   - `.venv` mit `scrapling`
+   - ggf. Startskript (`start.bat` / `start.sh`)
+3. Diese Pakete als GitHub Releases veröffentlichen
 
-### Später
-- Mehrfachauswahl Genres
-- Playlist-Export / Share-Links
-- Stats-Dashboard (Hörverhalten, Anker-Wechsel, Drift)
+Wenn du willst, kann ich dir im nächsten Schritt dafür direkt ein Build-/Release-Setup (z. B. GitHub Actions) anlegen.
 
----
+## Version
 
-## Stack
-
-- Runtime: [Bun](https://bun.sh) (HTTP-Server, SQLite, Bundler)
-- Frontend: React 19, Plain CSS, Vinyl-Animations
-- Scraping: Python + [scrapling](https://github.com/D4Vinci/Scrapling) (Cloudflare-Bypass)
-- YouTube: [youtubei.js](https://github.com/LuanRT/YouTube.js)
-
----
+Aktuell: `1.0.0`
 
 ## Lizenz
 
-MIT — siehe [LICENSE](LICENSE).
+MIT — siehe [LICENSE](LICENSE)

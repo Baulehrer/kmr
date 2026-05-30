@@ -1,7 +1,8 @@
 import { searchArtist, getSimilarArtists } from "./ma-client"
 import { searchTrack } from "./yt-client"
 import { getArtist, updateArtist } from "./library"
-import { parseGenre } from "./genre"
+import { filterCanonical, parseGenre } from "./genre"
+import { upsertGraphNode } from "./graph"
 import type { Artist, ResolvedTrack } from "./types"
 
 export async function resolveTrack(
@@ -13,9 +14,10 @@ export async function resolveTrack(
     if (result) {
       updateArtist(artist.name, {
         maId: result.maId,
-        genres: parseGenre(result.genre),
+        genres: filterCanonical(parseGenre(result.genre)),
         country: result.country,
       })
+      upsertGraphNode({ maId: result.maId, name: result.name, genre: result.genre, country: result.country })
       artist = getArtist(artist.name) ?? artist
     }
   }

@@ -71,7 +71,8 @@ const SPREAD_LABELS: Record<Spread, string> = {
 }
 
 interface YTPlayerLike {
-  loadVideoById(id: string): void
+  loadVideoById(id: string | { videoId: string; startSeconds?: number }): void
+  cueVideoById?(id: string | { videoId: string; startSeconds?: number }): void
   seekTo(seconds: number, allowSeekAhead?: boolean): void
   setVolume(v: number): void
   pauseVideo(): void
@@ -159,6 +160,8 @@ function App() {
   const playerRef = React.useRef<YTPlayerLike | null>(null)
   const playerReadyRef = React.useRef(false)
   const pendingVideoIdRef = React.useRef<string | null>(null)
+  const pendingAutoplayRef = React.useRef(true)
+  const pendingStartSecondsRef = React.useRef<number | undefined>(undefined)
   const currentVideoIdRef = React.useRef<string | null>(null)
   const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null)
   const playNextRef = React.useRef<() => void>(() => {})
@@ -167,8 +170,10 @@ function App() {
   const volumeRef = React.useRef(80)
   const wsRef = React.useRef<WebSocket | null>(null)
   const reconnectRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const shouldReconnectRef = React.useRef(true)
   const progressBarRef = React.useRef<HTMLDivElement | null>(null)
   const seekingRef = React.useRef(false)
+  const showControlsRef = React.useRef(false)
 
   const [current, setCurrent] = React.useState<Track | null>(null)
   const [progress, setProgress] = React.useState(0)
@@ -202,6 +207,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = React.useState(false)
 
   React.useEffect(() => {
+    showControlsRef.current = showControls
+  }, [showControls])
+
+  React.useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme)
     if (typeof localStorage !== "undefined") localStorage.setItem("kmr.theme", theme)
   }, [theme])
@@ -223,7 +232,30 @@ function App() {
     return () => window.removeEventListener("click", onDocClick)
   }, [settingsOpen])
 
-  const createPlayer = React.useCallback((videoIdToLoad?: string) => {
+  const loadIntoPlayer = React.useCallback((videoId: string, autoplay = true, startSeconds?: number) => {
+    const player = playerRef.current
+    if (!player) return
+    const start = typeof startSeconds === "number" && startSeconds > 0
+      ? Math.max(0, Math.floor(startSeconds))
+      : undefined
+    const arg = start === undefined ? videoId : { videoId, startSeconds: start }
+
+    if (autoplay) {
+      player.loadVideoById(arg)
+    } else if (player.cueVideoById) {
+      player.cueVideoById(arg)
+    } else {
+      player.loadVideoById(arg)
+      window.setTimeout(() => player.pauseVideo(), 0)
+    }
+    player.setVolume(volumeRef.current)
+    setPlaying(autoplay)
+  }, [])
+
+  const createPlayer = React.useCallback((
+    videoIdToLoad?: string,
+    options: { autoplay?: boolean; startSeconds?: number; controls?: boolean } = {},
+  ) => {
     const w = window as any
     if (!w.YT?.Player) return
 
@@ -238,26 +270,34 @@ function App() {
     const placeholder = document.createElement("div")
     placeholder.id = "yt-player-inner"
     container.appendChild(placeholder)
+    const controlsEnabled = options.controls ?? showControlsRef.current
 
     playerRef.current = new w.YT.Player("yt-player-inner", {
       height: "100%",
       width: "100%",
       playerVars: {
         autoplay: 0,
-        controls: showControls ? 1 : 0,
+        controls: controlsEnabled ? 1 : 0,
         modestbranding: 1,
         rel: 0,
-        fs: showControls ? 1 : 0,
+        fs: controlsEnabled ? 1 : 0,
         disablekb: 1,
       },
       events: {
         onReady: () => {
           playerReadyRef.current = true
           playerRef.current?.setVolume(volumeRef.current)
-          if (videoIdToLoad || pendingVideoIdRef.current) {
-            playerRef.current?.loadVideoById(videoIdToLoad || pendingVideoIdRef.current!)
+          const videoId = videoIdToLoad || pendingVideoIdRef.current
+          if (videoId) {
+            currentVideoIdRef.current = videoId
+            loadIntoPlayer(
+              videoId,
+              options.autoplay ?? pendingAutoplayRef.current,
+              options.startSeconds ?? pendingStartSecondsRef.current,
+            )
             pendingVideoIdRef.current = null
-            setPlaying(true)
+            pendingAutoplayRef.current = true
+            pendingStartSecondsRef.current = undefined
           }
         },
         onStateChange: (e: { data: number }) => {
@@ -267,20 +307,27 @@ function App() {
         },
       },
     })
-  }, [showControls])
+  }, [loadIntoPlayer])
 
-  const loadVideo = React.useCallback((videoId: string) => {
-    // Don't restart the same video — prevents prefetch broadcasts from resetting playback
-    if (videoId && videoId === currentVideoIdRef.current && playerReadyRef.current) return
+  const loadVideo = React.useCallback((videoId: string, autoplay = true, startSeconds?: number, syncPlayback = false) => {
+    // Don't restart the same video — prevents prefetch broadcasts from resetting playback.
+    if (videoId && videoId === currentVideoIdRef.current && playerReadyRef.current) {
+      if (syncPlayback) {
+        if (autoplay) playerRef.current?.playVideo()
+        else playerRef.current?.pauseVideo()
+        setPlaying(autoplay)
+      }
+      return
+    }
     currentVideoIdRef.current = videoId
     if (playerReadyRef.current && playerRef.current) {
-      playerRef.current.loadVideoById(videoId)
-      playerRef.current.setVolume(volumeRef.current)
-      setPlaying(true)
+      loadIntoPlayer(videoId, autoplay, startSeconds)
     } else {
       pendingVideoIdRef.current = videoId
+      pendingAutoplayRef.current = autoplay
+      pendingStartSecondsRef.current = startSeconds
     }
-  }, [])
+  }, [loadIntoPlayer])
 
   const playNext = React.useCallback(async () => {
     setLoading(true)
@@ -301,24 +348,23 @@ function App() {
   playNextRef.current = playNext
 
   const fetchMeta = React.useCallback(async () => {
-    const fetchOne = async (primary: string, fallback: string): Promise<any> => {
-      try {
-        const res = await fetch(primary).then((r) => r.json())
-        if (res && Object.values(res).some((v) => Array.isArray(v) && v.length > 0)) return res
-      } catch {}
-      try {
-        return await fetch(fallback).then((r) => r.json())
-      } catch {
-        return {}
-      }
-    }
+    try {
+      const local = await fetch("/api/genres").then((r) => r.json())
+      if (Array.isArray(local?.genres) && local.genres.length > 0) setGenres(local.genres)
+    } catch {}
 
-    const g = await fetchOne("/api/genres/all", "/api/genres")
-    setGenres(g.genres || [])
+    try {
+      const all = await fetch("/api/genres/all").then((r) => r.json())
+      if (Array.isArray(all?.genres) && all.genres.length > 0) setGenres(all.genres)
+    } catch {
+      // The local genre endpoint above is enough to keep the UI usable offline.
+    }
   }, [])
 
   const connectWs = React.useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    const readyState = wsRef.current?.readyState
+    if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return
+    shouldReconnectRef.current = true
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:"
     const ws = new WebSocket(`${proto}//${location.host}/ws`)
@@ -334,11 +380,7 @@ function App() {
         if (msg.type === "init") {
           if (msg.current) {
             setCurrent(msg.current)
-            if (playerReadyRef.current) {
-              loadVideo(msg.current.videoId)
-            } else {
-              pendingVideoIdRef.current = msg.current.videoId
-            }
+            loadVideo(msg.current.videoId, msg.playing ?? false, msg.current.progress, true)
           }
           setPlaying(msg.playing ?? false)
           setGenre(msg.genre || "")
@@ -377,7 +419,9 @@ function App() {
     }
 
     ws.onclose = () => {
+      if (wsRef.current === ws) wsRef.current = null
       setConnected(false)
+      if (!shouldReconnectRef.current) return
       reconnectRef.current = setTimeout(connectWs, 3000)
     }
 
@@ -585,6 +629,15 @@ function App() {
     playerRef.current?.setVolume(v)
   }, [])
 
+  const toggleYoutubeControls = React.useCallback(() => {
+    const next = !showControls
+    const videoId = currentVideoIdRef.current
+    const startSeconds = playerRef.current?.getCurrentTime?.() || progress
+    const autoplay = playing
+    setShowControls(next)
+    if (videoId) createPlayer(videoId, { controls: next, startSeconds, autoplay })
+  }, [createPlayer, playing, progress, showControls])
+
   const handleSeek = React.useCallback((clientX: number) => {
     if (!progressBarRef.current || !current?.duration) return
     const rect = progressBarRef.current.getBoundingClientRect()
@@ -658,8 +711,11 @@ function App() {
 
     return () => {
       mounted = false
+      shouldReconnectRef.current = false
       if (reconnectRef.current) clearTimeout(reconnectRef.current)
-      wsRef.current?.close()
+      const ws = wsRef.current
+      wsRef.current = null
+      ws?.close()
     }
   }, [createPlayer, connectWs, fetchMeta])
 
@@ -670,7 +726,7 @@ function App() {
         const p = playerRef.current.getCurrentTime?.() || 0
         setProgress(p)
       }
-    }, 2000)
+    }, 1000)
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
@@ -862,7 +918,7 @@ function App() {
           {showVideo && (
             <button
               className="btn-secondary"
-              onClick={() => setShowControls((v) => !v)}
+              onClick={toggleYoutubeControls}
               title="YouTube-Controls"
             >
               YT {showControls ? "on" : "off"}

@@ -27,6 +27,19 @@ const DETAIL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 let nextSlotAt = 0
 
+const upsertMaArtist = db.prepare(`
+  INSERT INTO ma_artists (ma_id, name, name_key, genre, country, location, formed_in, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(ma_id) DO UPDATE SET
+    name = COALESCE(NULLIF(excluded.name, ''), ma_artists.name),
+    name_key = COALESCE(NULLIF(excluded.name_key, ''), ma_artists.name_key),
+    genre = COALESCE(NULLIF(excluded.genre, ''), ma_artists.genre),
+    country = COALESCE(NULLIF(excluded.country, ''), ma_artists.country),
+    location = COALESCE(NULLIF(excluded.location, ''), NULLIF(ma_artists.location, '')),
+    formed_in = COALESCE(NULLIF(excluded.formed_in, ''), NULLIF(ma_artists.formed_in, '')),
+    updated_at = excluded.updated_at
+`)
+
 async function acquireSlot(): Promise<void> {
   const now = Date.now()
   const slot = Math.max(now, nextSlotAt)
@@ -61,7 +74,15 @@ export async function runAdapter(command: string, args: string[]): Promise<any> 
       throw new Error(msg)
     }
 
-    return JSON.parse(stdout.trim())
+    const raw = stdout.trim()
+    try {
+      return JSON.parse(raw)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      const msg = `Scrapling adapter returned invalid JSON: ${detail}; stderr=${stderr.slice(-200)}`
+      trackMaError(msg)
+      throw new Error(msg)
+    }
   } finally {
     clearTimeout(timer)
   }
@@ -97,11 +118,7 @@ export async function searchArtist(name: string): Promise<MASearchResult | null>
   const genre: string = parsed.genre || ""
   const country: string = parsed.country || ""
 
-  db.run(
-    `INSERT OR REPLACE INTO ma_artists (ma_id, name, name_key, genre, country, location, formed_in, updated_at)
-     VALUES (?, ?, ?, ?, ?, '', '', ?)`,
-    [maId, resolvedName, key, genre, country, Date.now()]
-  )
+  upsertMaArtist.run(maId, resolvedName, key, genre, country, "", "", Date.now())
 
   return { maId, name: resolvedName, genre, country }
 }
@@ -120,7 +137,7 @@ export async function getArtistDetail(maId: number): Promise<MAArtistDetail | nu
     formedIn: row.formed_in || null,
   })
 
-  if (cached && Date.now() - cached.updated_at < DETAIL_CACHE_TTL_MS) {
+  if (cached?.formed_in && Date.now() - cached.updated_at < DETAIL_CACHE_TTL_MS) {
     return fromRow(cached)
   }
 
@@ -138,11 +155,7 @@ export async function getArtistDetail(maId: number): Promise<MAArtistDetail | nu
   const location = pick(/<dt>Location<\/dt>\s*<dd>([^<]+)<\/dd>/) || ""
   const formedIn = pick(/<dt>Formed in<\/dt>\s*<dd>([^<]*)<\/dd>/) || null
 
-  db.run(
-    `INSERT OR REPLACE INTO ma_artists (ma_id, name, name_key, genre, country, location, formed_in, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [maId, bandName, normalizeName(bandName), genre, country, location, formedIn || "", Date.now()]
-  )
+  upsertMaArtist.run(maId, bandName, normalizeName(bandName), genre, country, location, formedIn || "", Date.now())
 
   return { maId, name: bandName, genre, country, location, formedIn }
 }

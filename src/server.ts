@@ -8,7 +8,7 @@ import {
   pause as schedulerPause,
   resume as schedulerResume,
   prefetchQueue,
-  selectNextTrack,
+  selectPlayableTrack,
   markPlaying,
   getAvailableGenres,
   fetchGenresFromMA,
@@ -31,7 +31,6 @@ import {
   dequeue,
   initRecentArtists,
   getQueueSize,
-  clearQueue,
   findQueuedByVideoId,
   dropQueueUpTo,
 } from "./queue"
@@ -49,6 +48,7 @@ import indexHtml from "../frontend/index.html"
 
 const startedAt = Date.now()
 const clients = new Set<ServerWebSocket>()
+let playNextInFlight: Promise<ResolvedTrack | null> | null = null
 
 function broadcast(type: string, payload: Record<string, unknown>): void {
   const msg = JSON.stringify({ type, ...payload })
@@ -74,6 +74,7 @@ function broadcastState(): void {
     anchor: state.anchor,
     spread: state.spread,
     decades: state.decades,
+    anchorFrequency: state.anchorFrequency,
   })
 }
 
@@ -118,10 +119,10 @@ function isDecade(v: unknown): v is Decade {
   return typeof v === "string" && (ALL_DECADES as string[]).includes(v)
 }
 
-async function playNextNow(): Promise<ResolvedTrack | null> {
+async function playNextNowInternal(): Promise<ResolvedTrack | null> {
   let item = dequeue()
   if (!item) {
-    const track = await selectNextTrack()
+    const track = await selectPlayableTrack()
     if (!track) return null
     item = { track, scheduledAt: Date.now(), playedAt: null }
   }
@@ -130,6 +131,14 @@ async function playNextNow(): Promise<ResolvedTrack | null> {
   broadcastState()
   void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
   return item.track
+}
+
+async function playNextNow(): Promise<ResolvedTrack | null> {
+  if (playNextInFlight) return playNextInFlight
+  playNextInFlight = playNextNowInternal().finally(() => {
+    playNextInFlight = null
+  })
+  return playNextInFlight
 }
 
 async function handlePlayNext(): Promise<Response> {
@@ -444,8 +453,13 @@ async function startup(): Promise<void> {
   initRecentArtists(config.repeatProtection)
   console.log("Recent artists restored from history")
 
-  await getYTClient()
-  console.log("YouTube client ready")
+  try {
+    await getYTClient()
+    console.log("YouTube client ready")
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`YouTube client not ready at startup (will retry on demand): ${message}`)
+  }
 
   const server = Bun.serve({
     port: config.server.port,
@@ -466,6 +480,7 @@ async function startup(): Promise<void> {
           anchor: state.anchor,
           spread: state.spread,
           decades: state.decades,
+          anchorFrequency: state.anchorFrequency,
           queue: getQueue().map((q) => q.track),
           history: getHistory(10),
         }))

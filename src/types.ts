@@ -59,6 +59,9 @@ export interface QueueItem {
 export interface RadioConfig {
   libraryPath: string
   maRateLimit: number
+  maGraphExpansionBudget: number
+  anchorMixWindow: number
+  ytResolveCandidates: number
   queueSize: number
   prefetchThreshold: number
   repeatProtection: number
