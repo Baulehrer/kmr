@@ -1,4 +1,4 @@
-# KMR (Kaufis Metal Radio) — Version 1.1
+# KMR (Kaufis Metal Radio) — Version 1.1.1
 
 Ein einfaches Webradio für Metal und verwandte Genres:
 
@@ -6,7 +6,7 @@ Ein einfaches Webradio für Metal und verwandte Genres:
 - Oder Genre + Jahrzehnt wählen
 - Läuft im Browser auf deinem eigenen Rechner
 
-## Installation (empfohlen): Docker
+## Installation (empfohlen): Docker auf dem Server
 
 ```bash
 git clone https://github.com/Baulehrer/kmr.git
@@ -14,7 +14,9 @@ cd kmr
 docker compose up -d
 ```
 
-Dann öffnen: <http://localhost:3000>
+KMR wird intern auf Port `3000` bereitgestellt und an das externe Docker-Netzwerk `webproxy` gehängt. Der öffentliche Zugriff läuft über deinen bestehenden Caddy/Reverse Proxy.
+
+Wichtig: Dieses Repo richtet keine Basic Auth ein. Falls du Auth brauchst, passiert das außerhalb von KMR in deiner Caddy-Konfiguration.
 
 Stoppen:
 
@@ -23,6 +25,23 @@ docker compose down
 ```
 
 Die Daten bleiben in `./data` erhalten (z. B. Cache und Verlauf).
+
+Lokal ohne Caddy kannst du den Container direkt mit Port-Mapping starten:
+
+```bash
+docker build -t kmr:1.1.1 .
+docker run --rm -p 3000:3000 -v "$PWD/data:/data" -v "$PWD/artists:/app/artists:ro" kmr:1.1.1
+```
+
+Dann öffnen: <http://localhost:3000>
+
+## Neu in Version 1.1.1
+
+- Docker bringt jetzt die fehlenden `scrapling`-Runtime-Abhängigkeiten mit: `curl_cffi`, `playwright` und `browserforge`.
+- Metal-Archives- und music-map-Abfragen funktionieren dadurch im Container wieder zuverlässig.
+- `docker-compose.yml` veröffentlicht keinen Host-Port mehr, sondern nutzt `expose: 3000`.
+- Der Container hängt am externen Docker-Netzwerk `webproxy`, damit Caddy KMR intern erreichen kann.
+- Keine Auth-Konfiguration im KMR-Repo.
 
 ## Neu in Version 1.1
 
@@ -44,7 +63,7 @@ Start:
 ```bash
 bun install
 python3 -m venv .venv
-.venv/bin/pip install scrapling
+.venv/bin/pip install scrapling curl_cffi playwright browserforge
 bun start
 ```
 
@@ -80,7 +99,7 @@ Wenn du willst, kann ich dir im nächsten Schritt dafür direkt ein Build-/Relea
 
 ## Version
 
-Aktuell: `1.1.0`
+Aktuell: `1.1.1`
 
 ## Lizenz
 

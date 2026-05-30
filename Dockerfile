@@ -9,7 +9,7 @@ RUN apt-get update \
 
 RUN python3 -m venv /app/.venv \
     && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /app/.venv/bin/pip install --no-cache-dir scrapling
+    && /app/.venv/bin/pip install --no-cache-dir scrapling curl_cffi playwright browserforge
 
 # Bun deps
 COPY package.json bun.lock ./
