@@ -1,4 +1,4 @@
-# KMR (Kaufis Metal Radio) — Version 1.0
+# KMR (Kaufis Metal Radio) — Version 1.1
 
 Ein einfaches Webradio für Metal und verwandte Genres:
 
@@ -23,6 +23,14 @@ docker compose down
 ```
 
 Die Daten bleiben in `./data` erhalten (z. B. Cache und Verlauf).
+
+## Neu in Version 1.1
+
+- Genre-Modus bleibt strikt im gewählten Metal-Archives-Genre.
+- Jahrzehnt-Filter wird nicht mehr automatisch aufgeweicht.
+- YouTube-Treffer werden strenger geprüft, damit keine falschen Songs wegen ähnlicher Begriffe laufen.
+- Beispiele wie `Kacey Musgraves - Rainbow` werden nicht mehr als Treffer für die Band `Rainbow` akzeptiert.
+- Die Videoansicht passt sich besser an die Fenstergröße an.
 
 ## Nutzung ohne Docker (lokal)
 
@@ -72,7 +80,7 @@ Wenn du willst, kann ich dir im nächsten Schritt dafür direkt ein Build-/Relea
 
 ## Version
 
-Aktuell: `1.0.0`
+Aktuell: `1.1.0`
 
 ## Lizenz
 

@@ -26,7 +26,7 @@ export async function resolveTrack(
     void getSimilarArtists(artist.maId).catch(() => {})
   }
 
-  const ytVideo = await searchTrack(artist.name, trackHint)
+  const ytVideo = await searchTrack(artist.name, trackHint, { genreHint: artist.genres.join(" ") })
   if (!ytVideo) {
     console.warn(`No YouTube result for "${artist.name}"`)
     return null

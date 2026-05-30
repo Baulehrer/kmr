@@ -1,7 +1,7 @@
 export function parseGenre(raw: string): string[] {
   if (!raw) return []
   return raw
-    .split(/[/,]/)
+    .split(/[/,;]/)
     .map((g) => g.trim())
     .filter(Boolean)
 }

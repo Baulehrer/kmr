@@ -737,7 +737,7 @@ function App() {
     : 0
 
   return (
-    <div className="app">
+    <div className={`app${showVideo ? " app-video" : ""}`}>
       <div className="header">
         <h1>KMR <span className="header-sub">Kaufis Metal Radio</span></h1>
         {mode === "band" && anchor ? (

@@ -10,6 +10,14 @@ describe("parseGenre", () => {
     expect(parseGenre("Black Metal, Doom Metal")).toEqual(["Black Metal", "Doom Metal"])
   })
 
+  test("splits on semicolon", () => {
+    expect(parseGenre("Death/Black Metal (early); Folk Black Metal (later)")).toEqual([
+      "Death",
+      "Black Metal (early)",
+      "Folk Black Metal (later)",
+    ])
+  })
+
   test("trims and drops empties", () => {
     expect(parseGenre("  Heavy Metal /  / Power Metal ")).toEqual(["Heavy Metal", "Power Metal"])
   })
@@ -31,6 +39,10 @@ describe("matchesGenre", () => {
 
   test("no match", () => {
     expect(matchesGenre("Heavy Metal", "Jazz")).toBe(false)
+  })
+
+  test("does not allow unrelated MA genres in strict genre selection", () => {
+    expect(matchesGenre("Death/Black Metal (early); Folk Black Metal (later)", "Progressive")).toBe(false)
   })
 
   test("empty target → match all", () => {

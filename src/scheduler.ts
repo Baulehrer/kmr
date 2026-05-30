@@ -272,7 +272,6 @@ async function tryResolveWithFallback(
 
 async function findLibraryArtist(genre: string): Promise<Artist | null> {
   const candidates: Artist[] = []
-  const fallback: Artist[] = []
   let lookups = 0
 
   for (const artist of getAllArtists()) {
@@ -282,16 +281,11 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
     if (artist.maId && artist.genres.length > 0) {
       if (matchesGenre(artist.genres, genre)) {
         candidates.push(artist)
-      } else {
-        fallback.push(artist)
       }
       continue
     }
 
-    if (lookups >= FIND_LIBRARY_LOOKUP_LIMIT) {
-      fallback.push(artist)
-      continue
-    }
+    if (lookups >= FIND_LIBRARY_LOOKUP_LIMIT) continue
     lookups++
 
     try {
@@ -306,16 +300,13 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
         upsertGraphNode({ maId: ma.maId, name: ma.name, genre: ma.genre, country: ma.country })
         const updated = getArtist(artist.name)
         if (updated) candidates.push(updated)
-      } else {
-        fallback.push(artist)
       }
     } catch (err) {
       console.warn("findLibraryArtist error for", artist.name, err)
-      fallback.push(artist)
     }
   }
 
-  return pickRandom(candidates) ?? pickRandom(fallback) ?? null
+  return pickRandom(candidates) ?? null
 }
 
 async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
@@ -335,8 +326,8 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
   const allowed = similar.filter((s) => !isBlocked(s.name))
   if (allowed.length === 0) return null
 
-  const genreFiltered = allowed.filter((s) => matchesGenre(s.genre, genre))
-  const pool = genreFiltered.length > 0 ? genreFiltered : allowed
+  const pool = allowed.filter((s) => matchesGenre(s.genre, genre))
+  if (pool.length === 0) return null
 
   const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection))
   const finalPool = nonRecent.length > 0 ? nonRecent : pool
@@ -361,7 +352,7 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
   return await tryResolveWithFallback(candidates, async (name) => {
     const node = getGraphNodeByName(name)
     if (!node) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: node.genre || genre })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -416,7 +407,10 @@ async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread
 
 /** Try to find a YouTube track for the anchor artist itself. */
 async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack | null> {
-  const ytVideo = await searchTrack(currentAnchor.name, undefined, { excludeVideoIds: getAvoidVideoIds() })
+  const genreHint = currentAnchor.source === "ma"
+    ? getGraphNode(parseInt(currentAnchor.sourceId, 10))?.genre
+    : undefined
+  const ytVideo = await searchTrack(currentAnchor.name, undefined, { excludeVideoIds: getAvoidVideoIds(), genreHint })
   if (!ytVideo) return null
   return {
     videoId: ytVideo.videoId,
@@ -503,7 +497,7 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
   return await tryResolveWithFallback(candidates, async (name) => {
     const candidate = sorted.find((c) => c.name === name)
     if (!candidate) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: candidate.genre })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,
@@ -571,6 +565,7 @@ async function findByGenreDecade(
       if (!node.name) continue
       if (isRecentArtist(node.name, config.repeatProtection)) continue
       if (isBlocked(node.name)) continue
+      if (!matchesGenre(node.genre ?? "", genre)) continue
       if (filterDecade && !matchesDecade((node.decade as Decade | null) ?? null, decades)) continue
       const info = pool.get(node.ma_id)!
       const baseScore = info.hops === 0 ? 1 : Math.max(0.01, info.aggregateScore)
@@ -587,11 +582,7 @@ async function findByGenreDecade(
     return out
   }
 
-  let candidates = buildCandidates(decades.length > 0)
-  if (candidates.length === 0 && decades.length > 0) {
-    console.warn(`Genre+Decade pool empty; relaxing decade filter (genre=${genre}, decades=${decades.join(",")})`)
-    candidates = buildCandidates(false)
-  }
+  const candidates = buildCandidates(decades.length > 0)
   if (candidates.length === 0) return null
 
   const sorted = candidates.sort((a, b) => b.score - a.score)
@@ -601,7 +592,7 @@ async function findByGenreDecade(
   return await tryResolveWithFallback(sampled, async (name) => {
     const candidate = sorted.find((c) => c.name === name)
     if (!candidate) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
+    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: candidate.genre || genre })
     if (!ytVideo) return null
     return {
       videoId: ytVideo.videoId,

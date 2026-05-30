@@ -32,6 +32,36 @@ describe("YouTube video scoring", () => {
     expect(picked?.videoId).toBe("topic")
   })
 
+  test("accepts topic channel matches even when the title omits the artist", () => {
+    const picked = pickBestVideo([
+      video("topic", "Stargazer", "Rainbow - Topic"),
+    ], "Rainbow")
+
+    expect(picked?.videoId).toBe("topic")
+  })
+
+  test("accepts label uploads when the title credits the artist first", () => {
+    const picked = pickBestVideo([
+      video("label", "Rainbow - Since You Been Gone (Official Video)", "Universal Music"),
+    ], "Rainbow")
+
+    expect(picked?.videoId).toBe("label")
+  })
+
+  test("rejects song-title traps for common artist names", () => {
+    const picked = pickBestVideo([
+      video("pop", "Kacey Musgraves - Rainbow (Official Music Video)", "KaceyMusgravesVEVO"),
+      video("real", "Rainbow - Stargazer", "Rainbow - Topic"),
+    ], "Rainbow")
+
+    expect(picked?.videoId).toBe("real")
+    expect(scoreVideo("Kacey Musgraves - Rainbow (Official Music Video)", "KaceyMusgravesVEVO", "Rainbow")).toBeLessThan(0)
+  })
+
+  test("rejects generic genre matches for one-word artists", () => {
+    expect(scoreVideo("Death Metal Compilation", "Metal Archive", "Death")).toBeLessThan(0)
+  })
+
   test("skips excluded video IDs", () => {
     const picked = pickBestVideo([
       video("topic", "Iron Maiden - The Trooper", "Iron Maiden - Topic"),
@@ -48,6 +78,19 @@ describe("YouTube video scoring", () => {
     ], "Iron Maiden")
 
     expect(picked).toBeNull()
+  })
+
+  test("rejects covers and compilation results", () => {
+    const picked = pickBestVideo([
+      video("cover", "Rainbow - Stargazer guitar cover", "Some Channel"),
+      video("compilation", "Rainbow greatest hits compilation", "Archive"),
+    ], "Rainbow")
+
+    expect(picked).toBeNull()
+  })
+
+  test("does not treat artist names containing blocked words as blocked keywords", () => {
+    expect(scoreVideo("Whitesnake - Here I Go Again", "David Coverdale", "Whitesnake")).toBeGreaterThan(0)
   })
 
   test("scores non-artist results as invalid", () => {
