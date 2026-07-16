@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       PYTHON: ${{ github.workspace }}/.venv/bin/python
-      NO_STRIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -44,9 +43,20 @@ jobs:
           python3 -m venv .venv
           "$PYTHON" -m pip install pyinstaller scrapling curl_cffi playwright browserforge
       - run: bun run desktop:prepare
-      - run: bunx tauri build --bundles appimage --verbose
-      - name: Artefakt sammeln
-        run: mkdir -p dist && cp src-tauri/target/release/bundle/appimage/*.AppImage "dist/KMR_${APP_VERSION}_x86_64.AppImage"
+      - name: AppImage-Grundpaket bauen
+        run: bunx tauri build --bundles appimage --config '{"bundle":{"externalBin":[]}}'
+      - name: Hilfsprogramme unverändert einbetten
+        run: |
+          appimage=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)
+          mkdir -p /tmp/kmr-appimage dist
+          chmod +x "$appimage"
+          (cd /tmp/kmr-appimage && "$GITHUB_WORKSPACE/$appimage" --appimage-extract)
+          install -m 755 src-tauri/binaries/kmr-server-x86_64-unknown-linux-gnu /tmp/kmr-appimage/squashfs-root/usr/bin/kmr-server
+          install -m 755 src-tauri/binaries/kmr-ma-adapter-x86_64-unknown-linux-gnu /tmp/kmr-appimage/squashfs-root/usr/bin/kmr-ma-adapter
+          curl -L --fail --retry 3 -o /tmp/appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          ARCH=x86_64 /tmp/appimagetool.AppImage --appimage-extract-and-run /tmp/kmr-appimage/squashfs-root "dist/KMR_${APP_VERSION}_x86_64.AppImage"
+          test -s "dist/KMR_${APP_VERSION}_x86_64.AppImage"
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/* }
 
