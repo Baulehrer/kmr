@@ -30,6 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       PYTHON: ${{ github.workspace }}/.venv/bin/python
+      NO_STRIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -43,7 +44,7 @@ jobs:
           python3 -m venv .venv
           "$PYTHON" -m pip install pyinstaller scrapling curl_cffi playwright browserforge
       - run: bun run desktop:prepare
-      - run: bunx tauri build --bundles appimage
+      - run: bunx tauri build --bundles appimage --verbose
       - name: Artefakt sammeln
         run: mkdir -p dist && cp src-tauri/target/release/bundle/appimage/*.AppImage "dist/KMR_${APP_VERSION}_x86_64.AppImage"
       - uses: actions/upload-artifact@v4
