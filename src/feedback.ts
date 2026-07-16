@@ -1,10 +1,10 @@
 import db, { type ArtistFeedbackRow } from "./db"
 import { normalizeName } from "./genre"
 
-const MIN_MULTIPLIER = 0.1
-const MAX_MULTIPLIER = 3.0
-const LIKE_WEIGHT = 0.5
-const DISLIKE_WEIGHT = 1.0
+const MIN_MULTIPLIER = 0.75
+const MAX_MULTIPLIER = 1.25
+const LIKE_WEIGHT = 0.04
+const DISLIKE_WEIGHT = 0.06
 
 const upsert = db.prepare(
   `INSERT INTO artist_feedback (artist_key, artist, likes, dislikes, updated_at)
@@ -69,15 +69,8 @@ export function getMultiplier(artist: string, maId?: number): number {
   return scoreMultiplier(row.likes, row.dislikes)
 }
 
-export function isBlocked(artist: string, maId?: number): boolean {
-  const row = findRow(artist, maId)
-  if (!row) return false
-  return row.dislikes - row.likes >= 3
-}
-
 function scoreMultiplier(likes: number, dislikes: number): number {
-  const net = likes * LIKE_WEIGHT - dislikes * DISLIKE_WEIGHT
-  const raw = 1 + net * 0.5
+  const raw = 1 + likes * LIKE_WEIGHT - dislikes * DISLIKE_WEIGHT
   return Math.max(MIN_MULTIPLIER, Math.min(MAX_MULTIPLIER, raw))
 }
 

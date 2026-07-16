@@ -81,6 +81,40 @@ interface AnchorCandidate {
   formedIn: string | null
 }
 
+interface RadioDraft {
+  mode: Mode
+  anchor: Anchor | null
+  spread: Spread
+  genre: string
+  decades: Decade[]
+  anchorFrequency: number
+  releaseTypes: ReleaseTypeFilter[]
+  country: string
+}
+
+function radioDraftKey(config: RadioDraft): string {
+  return JSON.stringify({
+    ...config,
+    anchor: config.anchor ? { source: config.anchor.source, sourceId: config.anchor.sourceId, name: config.anchor.name } : null,
+    decades: [...config.decades].sort(),
+    releaseTypes: [...config.releaseTypes].sort(),
+  })
+}
+
+function radioDraftFromPayload(payload: any): RadioDraft | null {
+  if (!payload || (payload.mode !== "band" && payload.mode !== "genre")) return null
+  return {
+    mode: payload.mode,
+    anchor: payload.anchor ?? null,
+    spread: payload.spread || "medium",
+    genre: payload.genre || "",
+    decades: Array.isArray(payload.decades) ? payload.decades : [],
+    anchorFrequency: typeof payload.anchorFrequency === "number" ? payload.anchorFrequency : 0,
+    releaseTypes: Array.isArray(payload.releaseTypes) ? payload.releaseTypes : [...ALL_RELEASE_TYPES],
+    country: typeof payload.country === "string" ? payload.country : "",
+  }
+}
+
 type ViewName = "vinyl" | "cards" | "compact"
 type StageMode = "vinyl" | "video" | "lyrics"
 const ALL_VIEWS: { value: ViewName; label: string }[] = [
@@ -432,6 +466,7 @@ function App() {
   const showControlsRef = React.useRef(false)
   const outputVolumeRef = React.useRef(80)
   const languageRef = React.useRef<Language>("de")
+  const draftReadyRef = React.useRef(false)
 
   const [current, setCurrent] = React.useState<Track | null>(null)
   const [progress, setProgress] = React.useState(0)
@@ -468,6 +503,10 @@ function App() {
   const [releaseTypes, setReleaseTypes] = React.useState<ReleaseTypeFilter[]>([...ALL_RELEASE_TYPES])
   const [loudnessDb, setLoudnessDb] = React.useState<number | null>(null)
   const [normalization, setNormalization] = React.useState(() => localStorage.getItem("kmr.normalization") !== "off")
+  const [volumeOpen, setVolumeOpen] = React.useState(false)
+  const [appliedConfig, setAppliedConfig] = React.useState<RadioDraft | null>(null)
+  const [applyingConfig, setApplyingConfig] = React.useState(false)
+  const [configError, setConfigError] = React.useState("")
   const [language, setLanguage] = React.useState<Language>(() => localStorage.getItem("kmr.language") === "en" ? "en" : "de")
   const [showControls, setShowControls] = React.useState(false)
   const [view, setView] = React.useState<ViewName>(() => {
@@ -482,6 +521,11 @@ function App() {
   const showVideo = stageMode === "video"
   const showLyrics = stageMode === "lyrics"
   const tx = (de: string, en: string) => tr(language, de, en)
+  const draftConfig = React.useMemo<RadioDraft>(() => ({
+    mode, anchor, spread, genre, decades, anchorFrequency, releaseTypes, country,
+  }), [mode, anchor, spread, genre, decades, anchorFrequency, releaseTypes, country])
+  const configDirty = !!appliedConfig && radioDraftKey(draftConfig) !== radioDraftKey(appliedConfig)
+  const canApplyConfig = !!appliedConfig && releaseTypes.length > 0 && !!genre && (mode === "genre" || !!anchor)
 
   React.useEffect(() => {
     languageRef.current = language
@@ -539,16 +583,17 @@ function App() {
   }, [view])
 
   React.useEffect(() => {
-    if (!settingsOpen) return
+    if (!settingsOpen && !volumeOpen) return
     const onDocClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement
-      if (!target.closest(".settings-popover") && !target.closest(".settings-trigger")) {
+      if (settingsOpen && !target.closest(".settings-popover") && !target.closest(".settings-trigger")) {
         setSettingsOpen(false)
       }
+      if (volumeOpen && !target.closest(".volume-menu")) setVolumeOpen(false)
     }
     window.addEventListener("click", onDocClick)
     return () => window.removeEventListener("click", onDocClick)
-  }, [settingsOpen])
+  }, [settingsOpen, volumeOpen])
 
   const loadIntoPlayer = React.useCallback((videoId: string, autoplay = true, startSeconds?: number) => {
     const player = playerRef.current
@@ -716,15 +761,22 @@ function App() {
             loadVideo(msg.current.videoId, msg.playing ?? false, msg.current.progress, true)
           }
           setPlaying(msg.playing ?? false)
-          setGenre(msg.genre || "")
-          if (msg.mode) setMode(msg.mode)
-          setAnchor(msg.anchor ?? null)
-          if (msg.spread) setSpread(msg.spread)
-          if (Array.isArray(msg.decades)) setDecades(msg.decades)
-          if (typeof msg.anchorFrequency === "number") setAnchorFrequency(msg.anchorFrequency)
+          const serverConfig = radioDraftFromPayload(msg)
+          if (serverConfig) {
+            setAppliedConfig(serverConfig)
+            if (!draftReadyRef.current) {
+              setGenre(serverConfig.genre)
+              setMode(serverConfig.mode)
+              setAnchor(serverConfig.anchor)
+              setSpread(serverConfig.spread)
+              setDecades(serverConfig.decades)
+              setAnchorFrequency(serverConfig.anchorFrequency)
+              setReleaseTypes(serverConfig.releaseTypes)
+              setCountry(serverConfig.country)
+              draftReadyRef.current = true
+            }
+          }
           setArtistFocus(msg.artistFocus ?? null)
-          if (Array.isArray(msg.releaseTypes)) setReleaseTypes(msg.releaseTypes)
-          if (typeof msg.country === "string") setCountry(msg.country)
           setQueue((msg.queue || []) as Track[])
           setHistory((msg.history || []) as Track[])
         }
@@ -744,15 +796,9 @@ function App() {
 
         if (msg.type === "state") {
           setPlaying(msg.playing ?? false)
-          setGenre(msg.genre || "")
-          if (msg.mode) setMode(msg.mode)
-          if ("anchor" in msg) setAnchor(msg.anchor ?? null)
-          if (msg.spread) setSpread(msg.spread)
-          if (Array.isArray(msg.decades)) setDecades(msg.decades)
-          if (typeof msg.anchorFrequency === "number") setAnchorFrequency(msg.anchorFrequency)
+          const serverConfig = radioDraftFromPayload(msg)
+          if (serverConfig) setAppliedConfig(serverConfig)
           if ("artistFocus" in msg) setArtistFocus(msg.artistFocus ?? null)
-          if (Array.isArray(msg.releaseTypes)) setReleaseTypes(msg.releaseTypes)
-          if (typeof msg.country === "string") setCountry(msg.country)
         }
 
         if (msg.type === "queue-status") {
@@ -828,57 +874,16 @@ function App() {
     if (olderHistory[0]) void jumpToTrack(olderHistory[0].videoId)
   }
 
-  const changeGenre = React.useCallback(async (g: string) => {
-    setGenre(g)
-    try {
-      await fetch("/api/radio/genre", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ genre: g }),
-      })
-    } catch {}
-  }, [])
+  const changeGenre = React.useCallback((g: string) => setGenre(g), [])
+  const changeMode = React.useCallback((m: Mode) => setMode(m), [])
+  const changeSpread = React.useCallback((s: Spread) => setSpread(s), [])
 
-  const changeMode = React.useCallback(async (m: Mode) => {
-    setMode(m)
-    try {
-      await fetch("/api/radio/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: m }),
-      })
-    } catch {}
-  }, [])
-
-  const changeSpread = React.useCallback(async (s: Spread) => {
-    setSpread(s)
-    try {
-      await fetch("/api/radio/spread", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spread: s }),
-      })
-    } catch {}
-  }, [])
-
-  const toggleDecade = React.useCallback(async (d: Decade) => {
+  const toggleDecade = React.useCallback((d: Decade) => {
     const next = decades.includes(d) ? decades.filter((x) => x !== d) : [...decades, d]
     setDecades(next)
-    try {
-      await fetch("/api/radio/decades", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decades: next }),
-      })
-    } catch {}
   }, [decades])
 
-  const changeCountry = React.useCallback(async (next: string) => {
-    setCountry(next)
-    await fetch("/api/radio/country", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ country: next }),
-    }).catch(() => {})
-  }, [])
+  const changeCountry = React.useCallback((next: string) => setCountry(next), [])
 
   const lookupAnchor = React.useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -898,23 +903,21 @@ function App() {
 
   const commitAnchor = React.useCallback(async (candidate: AnchorCandidate | string) => {
     setAnchorError(null)
-    const body = typeof candidate === "string"
-      ? { name: candidate }
-      : { name: candidate.name, source: candidate.source, sourceId: candidate.sourceId }
+    if (typeof candidate !== "string") {
+      setAnchor({ source: "ma", sourceId: candidate.sourceId, name: candidate.name })
+      setAnchorQuery("")
+      setAnchorCandidates([])
+      return
+    }
     try {
-      const res = await fetch("/api/radio/anchor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        if (Array.isArray(err?.candidates)) setAnchorCandidates(err.candidates)
-        setAnchorError(err?.error || tx("Nicht gefunden", "Not found"))
+      const data = await fetch(`/api/artists/lookup?q=${encodeURIComponent(candidate)}`).then((response) => response.json())
+      const exact = ((data?.candidates || []) as AnchorCandidate[]).filter((item) => item.name.toLocaleLowerCase() === candidate.toLocaleLowerCase())
+      if (exact.length !== 1) {
+        setAnchorCandidates(exact.length > 1 ? exact : (data?.candidates || []))
+        setAnchorError(exact.length > 1 ? tx("Bitte die richtige gleichnamige Band auswählen.", "Please select the correct band with this name.") : tx("Nicht gefunden", "Not found"))
         return
       }
-      const data = await res.json()
-      setAnchor(data.anchor)
+      setAnchor({ source: "ma", sourceId: exact[0]!.sourceId, name: exact[0]!.name })
       setAnchorQuery("")
       setAnchorCandidates([])
     } catch (e: any) {
@@ -922,12 +925,9 @@ function App() {
     }
   }, [language])
 
-  const clearAnchor = React.useCallback(async () => {
+  const clearAnchor = React.useCallback(() => {
     setAnchorError(null)
-    try {
-      await fetch("/api/radio/anchor", { method: "DELETE" })
-      setAnchor(null)
-    } catch {}
+    setAnchor(null)
   }, [])
 
   const openMABrowser = React.useCallback((maId?: number, albumId?: number) => {
@@ -952,16 +952,7 @@ function App() {
     if (response.ok) setArtistFocus(data.artistFocus)
   }, [artistFocus, current])
 
-  const changeAnchorFrequency = React.useCallback(async (freq: number) => {
-    setAnchorFrequency(freq)
-    try {
-      await fetch("/api/radio/anchor-frequency", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ frequency: freq }),
-      })
-    } catch {}
-  }, [])
+  const changeAnchorFrequency = React.useCallback((freq: number) => setAnchorFrequency(freq), [])
 
   React.useEffect(() => {
     const q = anchorQuery.trim()
@@ -1003,21 +994,6 @@ function App() {
     } catch {}
   }, [current])
 
-  const blockCurrentTrack = React.useCallback(async () => {
-    if (!current) return
-    setLoading(true)
-    setQueueLoading(true)
-    setQueueMessage(tx("Titel wird gesperrt, nächste Platte wird gesucht …", "Blocking track and searching for the next record …"))
-    try {
-      const response = await fetch("/api/radio/block-track", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ videoId: current.videoId }),
-      })
-      const data = await response.json().catch(() => ({}))
-      if (data.current) { setCurrent(data.current); setProgress(0); loadVideo(data.current.videoId); setQueueMessage("") }
-      else setQueueMessage(tx("Titel gesperrt. Ein neuer Titel wird gesucht …", "Track blocked. Searching for a new track …"))
-    } finally { setLoading(false) }
-  }, [current, loadVideo, language])
-
   const changeLyricsOffset = React.useCallback((offsetMs: number) => {
     const bounded = Math.max(-10_000, Math.min(10_000, offsetMs))
     setLyricsOffset(bounded)
@@ -1028,14 +1004,49 @@ function App() {
     localStorage.setItem("kmr.lyricsOffsets", JSON.stringify(offsets))
   }, [current?.videoId])
 
-  const toggleReleaseType = React.useCallback(async (type: ReleaseTypeFilter) => {
+  const toggleReleaseType = React.useCallback((type: ReleaseTypeFilter) => {
     const next = releaseTypes.includes(type) ? releaseTypes.filter((item) => item !== type) : [...releaseTypes, type]
     if (next.length === 0) return
     setReleaseTypes(next)
-    await fetch("/api/radio/release-types", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ releaseTypes: next }),
-    }).catch(() => {})
   }, [releaseTypes])
+
+  const applyRadioConfig = React.useCallback(async () => {
+    if (!canApplyConfig || applyingConfig) return
+    setApplyingConfig(true)
+    setConfigError("")
+    setQueueLoading(true)
+    setQueueMessage(tx("Dein Radio wird zusammengestellt …", "Building your radio …"))
+    let remainsPending = false
+    try {
+      const response = await fetch("/api/radio/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draftConfig),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setConfigError(data?.error || tx("Diese Auswahl konnte nicht gestartet werden.", "This selection could not be started."))
+        return
+      }
+      const confirmed = radioDraftFromPayload(data)
+      if (confirmed) setAppliedConfig(confirmed)
+      setArtistFocus(null)
+      setQueue((data.queue || []) as Track[])
+      setHistory((data.history || []) as Track[])
+      remainsPending = !!data.pending
+      if (data.current && !data.pending) {
+        setCurrent(data.current)
+        setProgress(0)
+        loadVideo(data.current.videoId)
+      }
+      if (!data.pending) setQueueMessage("")
+    } catch {
+      setConfigError(tx("Verbindung unterbrochen. Bitte erneut versuchen.", "Connection interrupted. Please try again."))
+    } finally {
+      setApplyingConfig(false)
+      if (!remainsPending) setQueueLoading(false)
+    }
+  }, [canApplyConfig, applyingConfig, draftConfig, language, loadVideo])
 
   const handleVolume = React.useCallback((v: number) => {
     setVolume(v)
@@ -1350,7 +1361,6 @@ function App() {
           >
             ✕
           </button>
-          <button className="btn-secondary" onClick={() => void blockCurrentTrack()} disabled={!current || loading} title={tx("Diesen Song nie wieder spielen", "Never play this song again")} aria-label={tx("Diesen Song nie wieder spielen", "Never play this song again")}>⊘</button>
           <button
             className={`btn-focus${artistFocus ? " active" : ""}`}
             onClick={() => void toggleArtistFocus()}
@@ -1366,6 +1376,46 @@ function App() {
               </button>
             ))}
           </div>
+          <div className={`volume-menu${volumeOpen ? " open" : ""}`}>
+            <button
+              className="audio-trigger"
+              onClick={() => setVolumeOpen((value) => !value)}
+              title={tx("Lautstärke", "Volume")}
+              aria-label={tx("Lautstärke öffnen", "Open volume")}
+              aria-expanded={volumeOpen}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 10v4h4l5 4V6L8 10H4Z" />
+                {volume > 0 && <path className="audio-wave" d="M16 9c1.4 1.6 1.4 4.4 0 6" />}
+                {volume >= 50 && <path className="audio-wave" d="M19 6.5c3 3 3 8 0 11" />}
+              </svg>
+            </button>
+            {volumeOpen && (
+              <div className="volume-popover" role="dialog" aria-label={tx("Lautstärke und Ausgleich", "Volume and normalization")}>
+                <div className="volume-popover-head">
+                  <strong>{tx("Lautstärke", "Volume")}</strong>
+                  <span>{volume}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={volume}
+                  aria-label={tx("Lautstärke", "Volume")}
+                  onChange={(event) => handleVolume(Number((event.target as HTMLInputElement).value))}
+                />
+                <button
+                  className={`audio-normalization${normalization ? " active" : ""}`}
+                  onClick={() => setNormalization((value) => !value)}
+                  aria-pressed={normalization}
+                >
+                  <span className="audio-normalization-mark" aria-hidden="true">⇄</span>
+                  <span><strong>{tx("Lautstärke ausgleichen", "Normalize volume")}</strong><small>{tx("Gleicht leise und laute Songs an", "Balances quiet and loud songs")}</small></span>
+                  <em>{normalization ? tx("An", "On") : tx("Aus", "Off")}</em>
+                </button>
+              </div>
+            )}
+          </div>
           {showVideo && (
             <button
               className="btn-secondary"
@@ -1375,16 +1425,6 @@ function App() {
               YT {showControls ? "on" : "off"}
             </button>
           )}
-          <div className="volume-wrap">
-            <button className={`normalization-toggle${normalization ? " active" : ""}`} onClick={() => setNormalization((value) => !value)} title={normalization ? tx("Lautstärkeausgleich ausschalten", "Disable volume normalization") : tx("Lautstärkeausgleich einschalten", "Enable volume normalization")} aria-pressed={normalization}>⇄ dB</button>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={volume}
-              onChange={(e) => handleVolume(Number((e.target as HTMLInputElement).value))}
-            />
-          </div>
         </div>
       </div>
 
@@ -1507,6 +1547,28 @@ function App() {
             </div>
           </div>
         )}
+
+        <div className="rock-confirmation">
+          <button
+            className={`lets-rock${configDirty ? " dirty" : ""}`}
+            onClick={() => void applyRadioConfig()}
+            disabled={!canApplyConfig || applyingConfig}
+          >
+            <span>{applyingConfig ? "…" : "LET’S ROCK!"}</span>
+            <small>
+              {applyingConfig
+                ? tx("Radio wird zusammengestellt", "Building your radio")
+                : mode === "band" && !anchor
+                  ? tx("Zuerst eine Wunschband auswählen", "Choose an artist first")
+                  : configDirty
+                    ? tx("Auswahl übernehmen und starten", "Apply selection and start")
+                    : current
+                      ? tx("Auswahl neu starten", "Restart selection")
+                      : tx("Auswahl starten", "Start selection")}
+            </small>
+          </button>
+          {configError && <p className="config-error" role="alert">{configError}</p>}
+        </div>
 
         <div className="mode-row">
           <span className="mode-row-label">{tx("Veröffentlichungen", "Releases")}</span>

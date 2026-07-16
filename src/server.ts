@@ -40,7 +40,6 @@ import {
   getQueueSize,
   findQueuedByVideoId,
   dropQueueUpTo,
-  removeQueuedVideo,
 } from "./queue"
 import db, { type HistoryRow } from "./db"
 import { resolveAnchor, resolveAnchorCandidate, lookupAnchorCandidates } from "./anchor"
@@ -53,7 +52,6 @@ import config from "./radio.config"
 import { getArtistDetail, getArtistDiscography, getLastMaError, getMaArtwork, getReleaseDetail, getSimilarArtists, searchArtistsBroad } from "./ma-client"
 import { CANONICAL_GENRES, normalizeName } from "./genre"
 import { getLyrics } from "./lyrics"
-import { blockTrack } from "./track-blocks"
 import { getVideoLoudnessDb } from "./yt-client"
 
 import indexHtml from "../frontend/index.html"
@@ -121,6 +119,7 @@ const ALLOWED_METHODS: Record<string, string[]> = {
   "/api/radio/dislike": ["POST"],
   "/api/radio/feedback": ["GET"],
   "/api/radio/state": ["GET"],
+  "/api/radio/configure": ["POST"],
   "/api/radio/mode": ["POST"],
   "/api/radio/anchor": ["POST", "DELETE"],
   "/api/radio/spread": ["POST"],
@@ -130,7 +129,6 @@ const ALLOWED_METHODS: Record<string, string[]> = {
   "/api/radio/decades": ["POST"],
   "/api/radio/lyrics": ["GET"],
   "/api/radio/artist-focus": ["POST", "DELETE"],
-  "/api/radio/block-track": ["POST"],
   "/api/radio/loudness": ["GET"],
   "/api/radio/release-types": ["POST"],
   "/api/radio/country": ["POST"],
@@ -350,16 +348,6 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       return Response.json({ videoId: current.videoId, loudnessDb: await getVideoLoudnessDb(current.videoId) })
     }
 
-    case "/api/radio/block-track": {
-      const current = getCurrentTrack()
-      const body = (await req.json().catch(() => ({}))) as { videoId?: string }
-      if (!current || body.videoId !== current.videoId) return Response.json({ error: "Der Titel hat inzwischen gewechselt" }, { status: 409 })
-      blockTrack(current)
-      removeQueuedVideo(current.videoId)
-      const next = await playNextNow()
-      return Response.json({ blocked: current.videoId, current: next ? getCurrentTrack() : null })
-    }
-
     case "/api/radio/artist-focus": {
       if (method === "DELETE") {
         stopArtistFocus()
@@ -386,6 +374,77 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
         queue: getQueue().map((q) => q.track),
         history: getHistory(10),
       })
+    }
+
+    case "/api/radio/configure": {
+      const body = (await req.json().catch(() => ({}))) as {
+        mode?: unknown
+        anchor?: null | { source?: unknown; sourceId?: unknown; name?: unknown }
+        spread?: unknown
+        genre?: unknown
+        decades?: unknown
+        anchorFrequency?: unknown
+        releaseTypes?: unknown
+        country?: unknown
+      }
+      if (!isMode(body.mode)) return Response.json({ error: "Ungültiger Radiomodus" }, { status: 400 })
+      if (!isSpread(body.spread)) return Response.json({ error: "Ungültige Ähnlichkeit" }, { status: 400 })
+      if (typeof body.genre !== "string" || !(CANONICAL_GENRES as readonly string[]).includes(body.genre)) {
+        return Response.json({ error: "Ungültiges Genre" }, { status: 400 })
+      }
+      if (!Array.isArray(body.decades) || !body.decades.every(isDecade)) {
+        return Response.json({ error: "Ungültige Jahrzehnte" }, { status: 400 })
+      }
+      if (!Array.isArray(body.releaseTypes) || body.releaseTypes.length === 0 || !body.releaseTypes.every(isReleaseType)) {
+        return Response.json({ error: "Mindestens eine Veröffentlichungsart ist erforderlich" }, { status: 400 })
+      }
+      const frequency = Number(body.anchorFrequency)
+      if (!Number.isFinite(frequency) || frequency < 0 || frequency > 100) {
+        return Response.json({ error: "Ungültiger Wunschband-Anteil" }, { status: 400 })
+      }
+      if (typeof body.country !== "string" || (body.country && !getTopCountries().includes(body.country))) {
+        return Response.json({ error: "Ungültiges Land" }, { status: 400 })
+      }
+
+      let nextAnchor: Anchor | null = null
+      if (body.anchor !== null && body.anchor !== undefined) {
+        if (body.anchor.source !== "ma" || typeof body.anchor.sourceId !== "string" || typeof body.anchor.name !== "string") {
+          return Response.json({ error: "Ungültige Wunschband" }, { status: 400 })
+        }
+        const existing = getAnchor()
+        nextAnchor = existing?.sourceId === body.anchor.sourceId && normalizeName(existing.name) === normalizeName(body.anchor.name)
+          ? existing
+          : await resolveAnchorCandidate(body.anchor.name, body.anchor.sourceId)
+        if (!nextAnchor) return Response.json({ error: "Wunschband konnte nicht bestätigt werden" }, { status: 400 })
+      }
+      if (body.mode === "band" && !nextAnchor) {
+        return Response.json({ error: "Bitte zuerst eine Wunschband auswählen" }, { status: 400 })
+      }
+
+      stopArtistFocus()
+      setMode(body.mode)
+      setAnchor(nextAnchor)
+      setSpread(body.spread)
+      setGenre(body.genre)
+      setDecades(body.decades)
+      setAnchorFrequency(frequency)
+      setReleaseTypes(body.releaseTypes)
+      setCountry(body.country)
+      broadcastState()
+      void playNextNow().then(async (track) => track ?? await playNextNow()).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`Radio start failed: ${message}`)
+        broadcastQueueStatus(false, "Für diese Auswahl wurde noch kein Titel gefunden.")
+      })
+      const state = getRadioState()
+      return Response.json({
+        ...state,
+        accepted: true,
+        pending: true,
+        current: getCurrentTrack(),
+        queue: getQueue().map((item) => item.track),
+        history: getHistory(10),
+      }, { status: 202 })
     }
 
     case "/api/radio/release-types": {

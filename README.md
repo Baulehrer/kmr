@@ -18,7 +18,7 @@ Bands und Songs werden mit Metal Archives abgeglichen. Dadurch landen keine frem
 
 ### Mehr Kontrolle über das Programm
 
-Filtere nach Jahrzehnt, Land sowie Studioalbum, EP, Livealbum, Demo oder Single. KMR merkt sich deine Auswahl. Du kannst außerdem die Lautstärke automatisch angleichen und einen einzelnen Song dauerhaft sperren.
+Filtere nach Jahrzehnt, Land sowie Studioalbum, EP, Livealbum, Demo oder Single. Stelle alles in Ruhe ein und starte deine Auswahl anschließend mit **„Let’s Rock!“**. Likes und Dislikes beeinflussen die künftige Auswahl leicht, ohne Bands vollständig auszuschließen. Die Lautstärke kann KMR automatisch angleichen.
 
 Die gesamte Oberfläche lässt sich oben mit den Flaggen zwischen Deutsch und Englisch umschalten.
 

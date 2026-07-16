@@ -3,8 +3,7 @@ import { searchArtist } from "./ma-client"
 import { expandArtist, getArtistsInGenre, getGraphNode, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
 import { enqueue, getQueueSize, getQueuedVideoIds, getRecentVideoIds, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
 import { parseGenre, matchesGenre, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
-import { getMultiplier, isBlocked } from "./feedback"
-import { getBlockedVideoIds } from "./track-blocks"
+import { getMultiplier } from "./feedback"
 import { resolveVerifiedTrack } from "./verified-resolver"
 import type { Artist, ArtistFocus, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig, ReleaseTypeFilter } from "./types"
 import { spreadToHops, ALL_DECADES, ALL_RELEASE_TYPES, getSpreadConfig } from "./types"
@@ -81,10 +80,16 @@ const parsedAnchorFrequency = Number.parseInt(STORED_ANCHOR_FREQUENCY || "0", 10
 let anchorFrequency: number = Number.isFinite(parsedAnchorFrequency) ? clampPercent(parsedAnchorFrequency) : 0
 const FIND_LIBRARY_LOOKUP_LIMIT = 50
 let prefetchInFlight: Promise<void> | null = null
+let selectionGeneration = 0
 type BandPick = "anchor" | "similar"
 let bandPickWindow: BandPick[] = []
 const hydratedAnchorNeighborhoods = new Set<string>()
 const anchorHydrationRetryAt = new Map<string, number>()
+
+function invalidateSelection(): void {
+  selectionGeneration++
+  clearQueue()
+}
 
 export function getCurrentGenre(): string {
   return currentGenre
@@ -96,7 +101,7 @@ export function setGenre(next: string): void {
   currentGenre = canonical
   saveSetting("genre", canonical)
   console.log(`Genre set to: ${canonical}`)
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getMode(): Mode {
@@ -109,7 +114,7 @@ export function setMode(next: Mode): void {
   saveSetting("mode", next)
   console.log(`Mode set to: ${next}`)
   resetBandMix()
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getAnchor(): Anchor | null {
@@ -122,7 +127,7 @@ export function setAnchor(next: Anchor | null): void {
   else db.run("DELETE FROM settings WHERE key = ?", ["anchor"])
   console.log(`Anchor set to: ${next?.name ?? "(none)"}`)
   resetBandMix()
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getSpread(): Spread {
@@ -135,7 +140,7 @@ export function setSpread(next: Spread): void {
   saveSetting("spread", next)
   console.log(`Spread set to: ${next}`)
   resetBandMix()
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getDecades(): Decade[] {
@@ -146,7 +151,7 @@ export function setDecades(next: Decade[]): void {
   currentDecades = [...next]
   saveSetting("decades", JSON.stringify(currentDecades))
   console.log(`Decades set to: ${next.length === 0 ? "(all)" : next.join(", ")}`)
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getReleaseTypes(): ReleaseTypeFilter[] {
@@ -157,7 +162,7 @@ export function setReleaseTypes(next: ReleaseTypeFilter[]): void {
   currentReleaseTypes = [...next]
   saveSetting("releaseTypes", JSON.stringify(currentReleaseTypes))
   console.log(`Release types set to: ${currentReleaseTypes.join(", ")}`)
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getCountry(): string {
@@ -168,7 +173,7 @@ export function setCountry(next: string): void {
   currentCountry = next.trim()
   saveSetting("country", currentCountry)
   console.log(`Country set to: ${currentCountry || "(all)"}`)
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getTopCountries(limit = 20): string[] {
@@ -210,7 +215,7 @@ export function startArtistFocus(maId: number, videoId: string): ArtistFocus | n
   }
   focusSeenVideoIds.clear()
   focusSeenVideoIds.add(currentTrack.videoId)
-  clearQueue()
+  invalidateSelection()
   return getArtistFocus()
 }
 
@@ -218,7 +223,7 @@ export function stopArtistFocus(): void {
   artistFocus = null
   focusArtist = null
   focusSeenVideoIds.clear()
-  clearQueue()
+  invalidateSelection()
 }
 
 export function getCurrentTrack(): (ResolvedTrack & { progress: number }) | null {
@@ -243,7 +248,7 @@ export function setAnchorFrequency(next: number): void {
   saveSetting("anchorFrequency", String(clamped))
   console.log(`Anchor frequency set to: ${clamped}%`)
   resetBandMix()
-  clearQueue()
+  invalidateSelection()
 }
 
 function pickRandom<T>(arr: T[]): T | undefined {
@@ -298,7 +303,6 @@ function trackBandPick(track: ResolvedTrack): void {
 
 function getAvoidVideoIds(): Set<string> {
   const ids = new Set<string>(getQueuedVideoIds())
-  for (const id of getBlockedVideoIds()) ids.add(id)
   const historyLimit = Math.max(config.repeatProtection * 3, config.queueSize * 3, 25)
   for (const id of getRecentVideoIds(historyLimit)) ids.add(id)
   if (currentTrack) ids.add(currentTrack.videoId)
@@ -366,7 +370,6 @@ async function findLibraryArtist(genre: string, country = ""): Promise<Artist | 
 
   for (const artist of getAllArtists()) {
     if (isRecentArtist(artist.name, config.repeatProtection, artist.maId)) continue
-    if (isBlocked(artist.name, artist.maId ?? undefined)) continue
     if (country && artist.country && artist.country !== country) continue
 
     if (artist.maId && artist.genres.length > 0) {
@@ -414,7 +417,7 @@ async function findSimilarTrack(genre: string, country = ""): Promise<ResolvedTr
     if (similar.length === 0) return null
   }
 
-  const allowed = similar.filter((s) => !isBlocked(s.name, s.maId))
+  const allowed = similar
   if (allowed.length === 0) return null
 
   const pool = allowed.filter((s) => matchesGenre(s.genre, genre) && (!country || s.country === country))
@@ -531,7 +534,6 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
     const node = nodeById.get(id)
     if (!node || !node.name) continue
     if (isRecentArtist(node.name, config.repeatProtection, id)) continue
-    if (isBlocked(node.name, id)) continue
     const baseScore = Math.max(0.01, info.aggregateScore * 100)
     const weighted = baseScore * getMultiplier(node.name, id)
     pool.push({ id, hops: info.hops, name: node.name, genre: node.genre ?? "", country: node.country ?? "", score: weighted })
@@ -560,8 +562,7 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
 
 async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
   const preferred = chooseBandSource(anchorFrequency, bandPickWindow, config.anchorMixWindow)
-  const anchorMaId = Number.parseInt(currentAnchor.sourceId, 10)
-  const allowAnchor = anchorFrequency > 0 && !isBlocked(currentAnchor.name, anchorMaId)
+  const allowAnchor = anchorFrequency > 0
   const allowSimilar = anchorFrequency < 100
   const tryAnchor = async () => (allowAnchor ? await resolveAnchorTrack(currentAnchor) : null)
   const trySimilar = async () => {
@@ -610,7 +611,6 @@ async function findByGenreDecade(
     for (const node of nodes) {
       if (!node.name) continue
       if (!allowRecent && isRecentArtist(node.name, config.repeatProtection, node.ma_id)) continue
-      if (isBlocked(node.name, node.ma_id)) continue
       if (!matchesGenre(node.genre ?? "", genre)) continue
       if (country && node.country !== country) continue
       const info = pool.get(node.ma_id)!
@@ -662,7 +662,7 @@ async function findKnownMaTrack(genre: string, decades: Decade[], country = ""):
     "SELECT * FROM ma_artists WHERE name != '' AND genre IS NOT NULL AND genre != '' ORDER BY updated_at DESC LIMIT 800",
   ).all() as MaArtistRow[]
   const build = (allowRecent: boolean) => rows.filter((row) => {
-    if (!matchesGenre(row.genre || "", genre) || isBlocked(row.name, row.ma_id)) return false
+    if (!matchesGenre(row.genre || "", genre)) return false
     if (country && row.country !== country) return false
     if (!allowRecent && isRecentArtist(row.name, config.repeatProtection, row.ma_id)) return false
     return true
@@ -742,10 +742,12 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
 }
 
 export async function selectPlayableTrack(maxAttempts = 10): Promise<ResolvedTrack | null> {
+  const generation = selectionGeneration
   let attempts = 0
   while (attempts < maxAttempts) {
     attempts++
     const track = await selectNextTrack()
+    if (generation !== selectionGeneration) return null
     if (!track) return null
     if (!isDuplicateForPlayback(track)) {
       trackBandPick(track)
@@ -756,12 +758,14 @@ export async function selectPlayableTrack(maxAttempts = 10): Promise<ResolvedTra
 }
 
 async function prefetchQueueInternal(maxAttempts = 25): Promise<void> {
+  const generation = selectionGeneration
   const targetSize = Math.max(1, config.queueSize, config.prefetchThreshold)
   let attempts = 0
   while (getQueueSize() < targetSize && attempts < maxAttempts) {
     attempts++
     try {
       const track = await selectNextTrack()
+      if (generation !== selectionGeneration) return
       if (!track) break
       if (isDuplicateForPlayback(track)) continue
       enqueue(track)

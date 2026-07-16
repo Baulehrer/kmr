@@ -83,12 +83,6 @@ export function clearQueue(): void {
   queue.length = 0
 }
 
-export function removeQueuedVideo(videoId: string): void {
-  for (let index = queue.length - 1; index >= 0; index--) {
-    if (queue[index]?.track.videoId === videoId) queue.splice(index, 1)
-  }
-}
-
 export function findQueuedByVideoId(videoId: string): { track: ResolvedTrack; index: number } | null {
   const idx = queue.findIndex((q) => q.track.videoId === videoId)
   if (idx === -1) return null

@@ -224,16 +224,6 @@ db.run(`
 `)
 
 db.run(`
-  CREATE TABLE IF NOT EXISTS blocked_tracks (
-    video_id TEXT PRIMARY KEY,
-    ma_id INTEGER NOT NULL,
-    artist TEXT NOT NULL,
-    title TEXT NOT NULL,
-    blocked_at INTEGER NOT NULL
-  )
-`)
-
-db.run(`
   CREATE TABLE IF NOT EXISTS youtube_loudness (
     video_id TEXT PRIMARY KEY,
     loudness_db REAL NOT NULL,
