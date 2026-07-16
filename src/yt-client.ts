@@ -57,6 +57,9 @@ const GENRE_KEYWORD_QUERIES: [keyword: string, queryTerm: string][] = [
 export interface SearchTrackOptions {
   excludeVideoIds?: Iterable<string>
   genreHint?: string
+  expectedTitle?: string
+  expectedDuration?: number
+  allowedChannelIds?: Iterable<string>
 }
 
 function normalizeText(value: string): string {
@@ -203,6 +206,19 @@ export function scoreVideo(title: string, channelName: string, artist: string): 
   return score
 }
 
+function matchesExpectedTrack(title: string, duration: number, options: SearchTrackOptions): boolean {
+  if (options.expectedTitle) {
+    const titleNorm = normalizeText(title)
+    const expectedNorm = normalizeText(options.expectedTitle)
+    if (!expectedNorm || !(` ${titleNorm} `.includes(` ${expectedNorm} `))) return false
+  }
+  if (options.expectedDuration && options.expectedDuration > 0) {
+    const tolerance = Math.max(20, Math.round(options.expectedDuration * 0.1))
+    if (Math.abs(duration - options.expectedDuration) > tolerance) return false
+  }
+  return true
+}
+
 export async function getClient(): Promise<Innertube> {
   if (yt) return yt
   if (!clientPromise) {
@@ -221,7 +237,12 @@ export async function getClient(): Promise<Innertube> {
 }
 
 export function pickBestVideo(videos: any[], artist: string, options: SearchTrackOptions = {}): YTVideo | null {
+  return rankVideos(videos, artist, options)[0] ?? null
+}
+
+export function rankVideos(videos: any[], artist: string, options: SearchTrackOptions = {}): YTVideo[] {
   const excluded = new Set(options.excludeVideoIds ?? [])
+  const allowedChannels = options.allowedChannelIds ? new Set(options.allowedChannelIds) : null
   const ranked: Array<{ video: YTVideo; score: number }> = []
 
   for (const video of videos) {
@@ -232,35 +253,37 @@ export function pickBestVideo(videos: any[], artist: string, options: SearchTrac
     if (duration < MIN_DURATION || duration > MAX_DURATION) continue
     const title = video?.title?.text || artist
     const channelName = video?.author?.name || ""
-    const candidate: YTVideo = { videoId, title, channelName, duration }
+    const channelId = video?.author?.id || ""
+    if (!channelId || channelId === "N/A") continue
+    if (allowedChannels && !allowedChannels.has(channelId)) continue
+    if (!matchesExpectedTrack(title, duration, options)) continue
+    const candidate: YTVideo = { videoId, title, channelName, channelId, duration }
     const score = scoreVideo(title, channelName, artist)
     if (score < 0) continue
     ranked.push({ video: candidate, score })
   }
 
   ranked.sort((a, b) => b.score - a.score)
-  return ranked[0]?.video ?? null
+  return ranked.map((entry) => entry.video)
 }
 
-async function search(query: string, artist: string, options: SearchTrackOptions): Promise<YTVideo | null> {
+async function search(query: string): Promise<any[]> {
   const client = await getClient()
   const results = await client.search(query, { type: "video" })
-  const videos = results.videos
-  if (!videos || videos.length === 0) return null
-  return pickBestVideo(videos as any[], artist, options)
+  return (results.videos || []) as any[]
 }
 
-export async function searchTrack(
+export async function searchTrackCandidates(
   artist: string,
   track?: string,
   options: SearchTrackOptions = {},
-): Promise<YTVideo | null> {
+): Promise<YTVideo[]> {
   const genreTerms = genreQueryTerms(options.genreHint)
   const queries = track
     ? [
+        ...(genreTerms[0] ? [`${artist} ${track} ${genreTerms[0]}`] : []),
         `${artist} ${track}`,
         `${artist} ${track} official`,
-        ...genreTerms.map((term) => `${artist} ${track} ${term}`),
       ]
     : [
         ...genreTerms.flatMap((term) => [
@@ -272,15 +295,30 @@ export async function searchTrack(
         `${artist} topic`,
         `${artist} song`,
       ]
-  for (const q of queries) {
-    try {
-      const found = await search(q, artist, options)
-      if (found) return found
-    } catch (err: any) {
-      console.warn(`YT search error for "${q}":`, err?.message || err)
+  const videos: any[] = []
+  const uniqueQueries = [...new Set(queries)]
+  const results = await Promise.allSettled(uniqueQueries.map((query) => search(query)))
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i]!
+    if (result.status === "fulfilled") videos.push(...result.value)
+    else {
+      const err = result.reason as any
+      console.warn(`YT search error for "${uniqueQueries[i]}":`, err?.message || err)
     }
   }
-  return null
+  const unique = new Map<string, any>()
+  for (const video of videos) {
+    if (video?.id && !unique.has(video.id)) unique.set(video.id, video)
+  }
+  return rankVideos([...unique.values()], artist, options)
+}
+
+export async function searchTrack(
+  artist: string,
+  track?: string,
+  options: SearchTrackOptions = {},
+): Promise<YTVideo | null> {
+  return (await searchTrackCandidates(artist, track, options))[0] ?? null
 }
 
 export function parseDuration(text?: string): number {

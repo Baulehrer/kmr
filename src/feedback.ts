@@ -17,34 +17,45 @@ const upsert = db.prepare(
 )
 
 export interface FeedbackEntry {
+  maId?: number
   artist: string
   likes: number
   dislikes: number
   multiplier: number
 }
 
-export function recordLike(artist: string): FeedbackEntry {
-  return record(artist, 1, 0)
+function feedbackKey(artist: string, maId?: number | null): string {
+  return maId && maId > 0 ? `ma:${maId}` : normalizeName(artist)
 }
 
-export function recordDislike(artist: string): FeedbackEntry {
-  return record(artist, 0, 1)
+function findRow(artist: string, maId?: number | null): ArtistFeedbackRow | undefined {
+  const exact = db.query("SELECT * FROM artist_feedback WHERE artist_key = ?").get(feedbackKey(artist, maId)) as ArtistFeedbackRow | undefined
+  if (exact || !maId) return exact
+  const count = db.query("SELECT COUNT(*) AS count FROM ma_artists WHERE name_key = ?").get(normalizeName(artist)) as { count: number }
+  if (count.count !== 1) return undefined
+  return db.query("SELECT * FROM artist_feedback WHERE artist_key = ?").get(normalizeName(artist)) as ArtistFeedbackRow | undefined
 }
 
-function record(artist: string, likeDelta: number, dislikeDelta: number): FeedbackEntry {
-  const key = normalizeName(artist)
+export function recordLike(artist: string, maId?: number): FeedbackEntry {
+  return record(artist, maId, 1, 0)
+}
+
+export function recordDislike(artist: string, maId?: number): FeedbackEntry {
+  return record(artist, maId, 0, 1)
+}
+
+function record(artist: string, maId: number | undefined, likeDelta: number, dislikeDelta: number): FeedbackEntry {
+  const key = feedbackKey(artist, maId)
   upsert.run(key, artist, likeDelta, dislikeDelta, Date.now())
-  return getFeedback(artist)
+  return getFeedback(artist, maId)
 }
 
-export function getFeedback(artist: string): FeedbackEntry {
-  const key = normalizeName(artist)
-  const row = db
-    .query("SELECT * FROM artist_feedback WHERE artist_key = ?")
-    .get(key) as ArtistFeedbackRow | undefined
+export function getFeedback(artist: string, maId?: number): FeedbackEntry {
+  const row = findRow(artist, maId)
   const likes = row?.likes ?? 0
   const dislikes = row?.dislikes ?? 0
   return {
+    maId,
     artist: row?.artist ?? artist,
     likes,
     dislikes,
@@ -52,18 +63,14 @@ export function getFeedback(artist: string): FeedbackEntry {
   }
 }
 
-export function getMultiplier(artist: string): number {
-  const row = db
-    .query("SELECT likes, dislikes FROM artist_feedback WHERE artist_key = ?")
-    .get(normalizeName(artist)) as Pick<ArtistFeedbackRow, "likes" | "dislikes"> | undefined
+export function getMultiplier(artist: string, maId?: number): number {
+  const row = findRow(artist, maId)
   if (!row) return 1
   return scoreMultiplier(row.likes, row.dislikes)
 }
 
-export function isBlocked(artist: string): boolean {
-  const row = db
-    .query("SELECT likes, dislikes FROM artist_feedback WHERE artist_key = ?")
-    .get(normalizeName(artist)) as Pick<ArtistFeedbackRow, "likes" | "dislikes"> | undefined
+export function isBlocked(artist: string, maId?: number): boolean {
+  const row = findRow(artist, maId)
   if (!row) return false
   return row.dislikes - row.likes >= 3
 }

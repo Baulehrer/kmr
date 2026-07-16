@@ -12,6 +12,23 @@ export interface MASearchResult {
   name: string
   genre: string
   country: string
+  formedIn: string | null
+}
+
+export interface MARelease {
+  maId: number
+  albumId: number
+  title: string
+  type: string
+  year: string
+}
+
+export interface MATrack {
+  maId: number
+  albumId: number
+  album: string
+  title: string
+  duration: number
 }
 
 export interface MAArtistDetail {
@@ -35,10 +52,12 @@ export interface YTVideo {
   videoId: string
   title: string
   channelName: string
+  channelId: string
   duration: number
 }
 
 export interface ResolvedTrack {
+  maId: number
   videoId: string
   title: string
   artist: string
@@ -75,12 +94,15 @@ export interface RadioConfig {
 export type Mode = "band" | "genre"
 export type Spread = "narrow" | "medium" | "wide"
 export type Decade = "70s" | "80s" | "90s" | "00s" | "10s" | "20s"
-export type AnchorSource = "ma" | "musicmap"
+export type AnchorSource = "ma"
 
 export interface Anchor {
   source: AnchorSource
   sourceId: string
   name: string
+  genre?: string
+  country?: string
+  formedIn?: string | null
 }
 
 export const ALL_DECADES: Decade[] = ["70s", "80s", "90s", "00s", "10s", "20s"]
@@ -88,13 +110,12 @@ export const ALL_DECADES: Decade[] = ["70s", "80s", "90s", "00s", "10s", "20s"]
 export interface SpreadConfig {
   minScore: number
   maxHops: 1 | 2 | 3
-  musicMapThreshold: number
 }
 
 export const SPREAD_CONFIG: Record<Spread, SpreadConfig> = {
-  narrow: { minScore: 70, maxHops: 2, musicMapThreshold: 80 },
-  medium: { minScore: 40, maxHops: 2, musicMapThreshold: 50 },
-  wide: { minScore: 10, maxHops: 3, musicMapThreshold: 10 },
+  narrow: { minScore: 70, maxHops: 2 },
+  medium: { minScore: 40, maxHops: 2 },
+  wide: { minScore: 10, maxHops: 3 },
 }
 
 export function getSpreadConfig(spread: Spread): SpreadConfig {
@@ -103,9 +124,4 @@ export function getSpreadConfig(spread: Spread): SpreadConfig {
 
 export function spreadToHops(spread: Spread): 1 | 2 | 3 {
   return SPREAD_CONFIG[spread].maxHops
-}
-
-/** Minimum similarity score (0-100) for music-map results per spread level */
-export function spreadToMusicMapThreshold(spread: Spread): number {
-  return SPREAD_CONFIG[spread].musicMapThreshold
 }

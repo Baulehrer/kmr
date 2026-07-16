@@ -2,8 +2,7 @@ import sys
 import json
 import re
 import html
-import math
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote
 from scrapling.fetchers import Fetcher
 
 
@@ -16,7 +15,7 @@ def fetch_url(url: str) -> dict:
         return {"status": 0, "body": "", "error": str(e)}
 
 
-def search_artist(name: str) -> dict:
+def search_artists(name: str) -> dict:
     encoded = quote(name)
     url = (
         f"https://www.metal-archives.com/search/ajax-advanced/searching/bands/"
@@ -31,25 +30,82 @@ def search_artist(name: str) -> dict:
     try:
         data = json.loads(result["body"])
         records = data.get("aaData", [])
-        if not records:
-            result["parsed"] = None
-            return result
-
-        row = records[0]
-        html_name = row[0]
-        match = re.search(r'href="[^"]*/bands/[^/]+/(\d+)"', html_name)
-        name_match = re.search(r'>([^<]+)<', html_name)
-
-        result["parsed"] = {
-            "maId": int(match.group(1)) if match else None,
-            "name": html.unescape(name_match.group(1)) if name_match else name,
-            "genre": html.unescape(row[1]) if len(row) > 1 else "",
-            "country": html.unescape(row[2]) if len(row) > 2 else "",
-        }
+        parsed = []
+        for row in records:
+            html_name = row[0]
+            match = re.search(r'href="[^"]*/bands/[^/]+/(\d+)"', html_name)
+            name_match = re.search(r'>([^<]+)<', html_name)
+            if not match:
+                continue
+            parsed.append({
+                "maId": int(match.group(1)),
+                "name": html.unescape(name_match.group(1)) if name_match else name,
+                "genre": html.unescape(row[1]) if len(row) > 1 else "",
+                "country": html.unescape(row[2]) if len(row) > 2 else "",
+                "formedIn": html.unescape(row[3]) if len(row) > 3 and row[3] != "N/A" else None,
+            })
+        result["parsed"] = parsed
     except Exception as e:
         result["parsed"] = None
         result["parse_error"] = str(e)
 
+    return result
+
+
+def get_discography(ma_id: int) -> dict:
+    result = fetch_url(f"https://www.metal-archives.com/band/discography/id/{ma_id}/tab/all")
+    if result["error"] or result["status"] != 200:
+        return result
+    releases = []
+    pattern = re.compile(
+        r'<tr>\s*<td><a href="[^"]*/albums/[^/]+/[^/]+/(\d+)"[^>]*>(.*?)</a></td>'
+        r'\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(result["body"]):
+        clean = lambda value: html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+        releases.append({
+            "maId": ma_id,
+            "albumId": int(match.group(1)),
+            "title": clean(match.group(2)),
+            "type": clean(match.group(3)),
+            "year": clean(match.group(4)),
+        })
+    result["parsed"] = releases
+    return result
+
+
+def get_release_tracks(ma_id: int, album_id: int) -> dict:
+    result = fetch_url(f"https://www.metal-archives.com/release/view/id/{album_id}")
+    if result["error"] or result["status"] != 200:
+        return result
+    body = result["body"]
+    linked_band = re.search(r'/bands/[^/]+/(\d+)"[^>]*>[^<]+</a>\s*</h2>', body)
+    if linked_band and int(linked_band.group(1)) != ma_id:
+        result["error"] = f"Release {album_id} does not belong to band {ma_id}"
+        result["parsed"] = []
+        return result
+    album_match = re.search(r'<h1 class="album_name">.*?<a[^>]*>(.*?)</a>', body, re.DOTALL)
+    album = html.unescape(re.sub(r"<[^>]+>", "", album_match.group(1))).strip() if album_match else ""
+    tracks = []
+    pattern = re.compile(
+        r'<tr class="(?:even|odd)">\s*<td[^>]*>.*?</td>\s*'
+        r'<td class="wrapWords">\s*(.*?)\s*</td>\s*'
+        r'<td align="right">\s*(\d+):(\d{2})\s*</td>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(body):
+        title = html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
+        if not title:
+            continue
+        tracks.append({
+            "maId": ma_id,
+            "albumId": album_id,
+            "album": album,
+            "title": title,
+            "duration": int(match.group(2)) * 60 + int(match.group(3)),
+        })
+    result["parsed"] = tracks
     return result
 
 
@@ -142,58 +198,6 @@ MA_GENRES = [
 ]
 
 
-def musicmap_similar(query: str) -> dict:
-    slug = quote_plus(query.strip().lower().replace(" ", "+"), safe="+")
-    url = f"https://www.music-map.com/{slug}"
-    result = fetch_url(url)
-    if result["error"] or result["status"] != 200:
-        result["parsed"] = []
-        return result
-
-    body = result["body"]
-
-    # 1. Extract artists in id order. Format: <a ... class=S id=s0>NAME</a>
-    name_pattern = re.compile(
-        r'<a[^>]*\bclass=S\s+id=s(\d+)[^>]*>([^<]+)</a>',
-        re.IGNORECASE,
-    )
-    by_id: dict[int, str] = {}
-    for m in name_pattern.finditer(body):
-        idx = int(m.group(1))
-        by_id[idx] = html.unescape(m.group(2)).strip()
-
-    if not by_id:
-        result["parsed"] = []
-        return result
-
-    # 2. Extract Aid[0]=new Array(-1, x1, x2, ...) — row 0 = similarity FROM query
-    row0 = re.search(r'Aid\[0\]\s*=\s*new\s+Array\(([^)]+)\)', body)
-    similar: list[dict] = []
-    if row0:
-        try:
-            raw_scores = [float(s.strip()) for s in row0.group(1).split(',')]
-            # raw_scores[i] is similarity of artist i to query (i=0 is -1 self)
-            valid = [(i, s) for i, s in enumerate(raw_scores) if i > 0 and s > 0 and i in by_id]
-            max_s = max(s for _, s in valid) if valid else 1.0
-            for i, s in valid:
-                score = max(1, min(100, int(round(100 * s / max_s))))
-                similar.append({"name": by_id[i], "score": score})
-        except (ValueError, IndexError):
-            pass
-
-    # 3. Fallback: rank-based scoring when no similarity matrix is found
-    if not similar:
-        ordered = [n for i, n in sorted(by_id.items()) if i > 0]
-        total = len(ordered) or 1
-        for rank, name in enumerate(ordered):
-            score = max(1, int(round(100 * (1 - rank / total))))
-            similar.append({"name": name, "score": score})
-
-    similar.sort(key=lambda x: x["score"], reverse=True)
-    result["parsed"] = similar
-    return result
-
-
 def browse_genres() -> dict:
     """Fetch live genre list from MA's browse/genre page."""
     url = "https://www.metal-archives.com/browse/genre"
@@ -239,17 +243,19 @@ def main() -> None:
     command = sys.argv[1]
     try:
         if command == "search":
-            out = search_artist(sys.argv[2])
+            out = search_artists(sys.argv[2])
         elif command == "detail":
             out = get_artist_detail(int(sys.argv[2]), sys.argv[3])
         elif command == "similar":
             out = get_similar_artists(int(sys.argv[2]))
+        elif command == "discography":
+            out = get_discography(int(sys.argv[2]))
+        elif command == "release-tracks":
+            out = get_release_tracks(int(sys.argv[2]), int(sys.argv[3]))
         elif command == "genres":
             out = get_genres_countries()
         elif command == "browse-genres":
             out = browse_genres()
-        elif command == "musicmap-similar":
-            out = musicmap_similar(sys.argv[2])
         elif command == "fetch":
             out = fetch_url(sys.argv[2])
         else:

@@ -1,14 +1,12 @@
 import { getAllArtists, getArtist, updateArtist } from "./library"
 import { searchArtist, runAdapter } from "./ma-client"
-import { resolveTrack } from "./resolver"
-import { expandArtist, getArtistsInGenre, getGraphNode, getGraphNodeByName, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
-import { getMusicMapSimilar } from "./musicmap-client"
+import { expandArtist, getArtistsInGenre, getGraphNode, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
 import { enqueue, getQueueSize, getQueuedVideoIds, getRecentVideoIds, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
-import { searchTrack } from "./yt-client"
-import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre, normalizeName } from "./genre"
+import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
 import { getMultiplier, isBlocked } from "./feedback"
+import { resolveVerifiedTrack } from "./verified-resolver"
 import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig } from "./types"
-import { spreadToHops, spreadToMusicMapThreshold, ALL_DECADES, getSpreadConfig } from "./types"
+import { spreadToHops, ALL_DECADES, getSpreadConfig } from "./types"
 import db, { type SettingsRow } from "./db"
 import config from "./radio.config"
 
@@ -41,12 +39,13 @@ let anchor: Anchor | null = (() => {
   if (!STORED_ANCHOR) return null
   try {
     const parsed = JSON.parse(STORED_ANCHOR) as Anchor
-    if ((parsed.source === "ma" || parsed.source === "musicmap") && parsed.sourceId && parsed.name) {
+    if (parsed.source === "ma" && parsed.sourceId && parsed.name) {
       return parsed
     }
   } catch {}
   return null
 })()
+if (STORED_ANCHOR && !anchor) db.run("DELETE FROM settings WHERE key = ?", ["anchor"])
 let spread: Spread = STORED_SPREAD === "narrow" || STORED_SPREAD === "wide" ? STORED_SPREAD : "medium"
 let currentGenre: string = toCanonicalGenre(STORED_GENRE || "") ?? config.defaultGenre
 let currentDecades: Decade[] = (() => {
@@ -236,7 +235,7 @@ function isAnchorTrack(track: ResolvedTrack): boolean {
   return mode === "band"
     && !!anchor
     && track.hopsFromAnchor === 0
-    && normalizeName(track.artist) === normalizeName(anchor.name)
+    && track.maId === Number.parseInt(anchor.sourceId, 10)
 }
 
 function isDuplicateForPlayback(track: ResolvedTrack): boolean {
@@ -255,14 +254,14 @@ interface FallbackCandidate {
  * candidate order.
  * Returns the first successful ResolvedTrack, or null if all fail.
  */
-async function tryResolveWithFallback(
-  candidates: FallbackCandidate[],
-  resolve: (name: string) => Promise<ResolvedTrack | null>,
+async function tryResolveWithFallback<T extends FallbackCandidate>(
+  candidates: T[],
+  resolve: (candidate: T) => Promise<ResolvedTrack | null>,
   count = 3,
 ): Promise<ResolvedTrack | null> {
   if (candidates.length === 0) return null
   const limit = Math.min(count, candidates.length)
-  const promises = candidates.slice(0, limit).map((c) => resolve(c.name))
+  const promises = candidates.slice(0, limit).map((candidate) => resolve(candidate))
   const results = await Promise.allSettled(promises)
   for (const r of results) {
     if (r.status === "fulfilled" && r.value) return r.value
@@ -275,8 +274,8 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
   let lookups = 0
 
   for (const artist of getAllArtists()) {
-    if (isRecentArtist(artist.name, config.repeatProtection)) continue
-    if (isBlocked(artist.name)) continue
+    if (isRecentArtist(artist.name, config.repeatProtection, artist.maId)) continue
+    if (isBlocked(artist.name, artist.maId ?? undefined)) continue
 
     if (artist.maId && artist.genres.length > 0) {
       if (matchesGenre(artist.genres, genre)) {
@@ -323,13 +322,13 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
     if (similar.length === 0) return null
   }
 
-  const allowed = similar.filter((s) => !isBlocked(s.name))
+  const allowed = similar.filter((s) => !isBlocked(s.name, s.maId))
   if (allowed.length === 0) return null
 
   const pool = allowed.filter((s) => matchesGenre(s.genre, genre))
   if (pool.length === 0) return null
 
-  const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection))
+  const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection, s.maId))
   const finalPool = nonRecent.length > 0 ? nonRecent : pool
 
   const weighted = finalPool
@@ -338,7 +337,7 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
       maId: s.maId,
       genre: s.genre,
       country: s.country,
-      score: Math.max(0.01, s.score * getMultiplier(s.name)),
+      score: Math.max(0.01, s.score * getMultiplier(s.name, s.maId)),
     }))
     .sort((a, b) => b.score - a.score)
 
@@ -349,80 +348,31 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
   const candidates = weightedSample(weighted, Math.max(1, config.ytResolveCandidates))
   const excludeVideoIds = getAvoidVideoIds()
 
-  return await tryResolveWithFallback(candidates, async (name) => {
-    const node = getGraphNodeByName(name)
-    if (!node) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: node.genre || genre })
-    if (!ytVideo) return null
-    return {
-      videoId: ytVideo.videoId,
-      title: ytVideo.title,
-      artist: name,
-      genre: node.genre || genre,
-      country: node.country || "",
-      duration: ytVideo.duration,
+  return await tryResolveWithFallback(candidates, async (candidate) => {
+    return await resolveVerifiedTrack({
+      maId: candidate.maId,
+      name: candidate.name,
+      genre: candidate.genre || genre,
+      country: candidate.country || "",
       source: "similar",
       similarTo: sourceNode?.name,
-    }
-  })
-}
-
-async function findByMusicMapAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
-  const similar = await getMusicMapSimilar(currentAnchor.name)
-  if (similar.length === 0) return null
-
-  const threshold = spreadToMusicMapThreshold(currentSpread)
-  const pool = similar
-    .filter((s) => s.score >= threshold)
-    .filter((s) => !isRecentArtist(s.name, config.repeatProtection))
-    .filter((s) => !isBlocked(s.name))
-  if (pool.length === 0) return null
-
-  const weighted = pool
-    .map((s) => ({
-      name: s.name,
-      score: Math.max(0.01, s.score) * getMultiplier(s.name),
-    }))
-    .sort((a, b) => b.score - a.score)
-
-  const candidates = weightedSample(weighted, Math.max(1, config.ytResolveCandidates))
-  const excludeVideoIds = getAvoidVideoIds()
-
-  return await tryResolveWithFallback(candidates, async (name) => {
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds })
-    if (!ytVideo) return null
-    return {
-      videoId: ytVideo.videoId,
-      title: ytVideo.title,
-      artist: name,
-      genre: "",
-      country: "",
-      duration: ytVideo.duration,
-      source: "similar",
-      similarTo: currentAnchor.name,
-      hopsFromAnchor: 1,
-    }
+    }, excludeVideoIds)
   })
 }
 
 /** Try to find a YouTube track for the anchor artist itself. */
 async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack | null> {
-  const genreHint = currentAnchor.source === "ma"
-    ? getGraphNode(parseInt(currentAnchor.sourceId, 10))?.genre
-    : undefined
-  const ytVideo = await searchTrack(currentAnchor.name, undefined, { excludeVideoIds: getAvoidVideoIds(), genreHint })
-  if (!ytVideo) return null
-  return {
-    videoId: ytVideo.videoId,
-    title: ytVideo.title,
-    artist: currentAnchor.name,
-    genre: "",
-    country: "",
-    duration: ytVideo.duration,
+  const maId = Number.parseInt(currentAnchor.sourceId, 10)
+  if (!Number.isInteger(maId)) return null
+  const node = getGraphNode(maId)
+  return await resolveVerifiedTrack({
+    maId,
+    name: currentAnchor.name,
+    genre: node?.genre || currentAnchor.genre || "",
+    country: node?.country || currentAnchor.country || "",
     source: "similar",
-    similarTo: undefined,
     hopsFromAnchor: 0,
-  }
+  }, getAvoidVideoIds())
 }
 
 async function hydrateMaAnchorNeighborhood(anchorId: number, currentSpread: Spread, cfg: SpreadConfig): Promise<void> {
@@ -482,10 +432,10 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
   for (const [id, info] of neighborhood) {
     const node = nodeById.get(id)
     if (!node || !node.name) continue
-    if (isRecentArtist(node.name, config.repeatProtection)) continue
-    if (isBlocked(node.name)) continue
+    if (isRecentArtist(node.name, config.repeatProtection, id)) continue
+    if (isBlocked(node.name, id)) continue
     const baseScore = Math.max(0.01, info.aggregateScore * 100)
-    const weighted = baseScore * getMultiplier(node.name)
+    const weighted = baseScore * getMultiplier(node.name, id)
     pool.push({ id, hops: info.hops, name: node.name, genre: node.genre ?? "", country: node.country ?? "", score: weighted })
   }
   if (pool.length === 0) return null
@@ -494,33 +444,27 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
   const candidates = weightedSample(sorted, Math.max(1, config.ytResolveCandidates))
   const excludeVideoIds = getAvoidVideoIds()
 
-  return await tryResolveWithFallback(candidates, async (name) => {
-    const candidate = sorted.find((c) => c.name === name)
-    if (!candidate) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: candidate.genre })
-    if (!ytVideo) return null
-    return {
-      videoId: ytVideo.videoId,
-      title: ytVideo.title,
-      artist: name,
+  return await tryResolveWithFallback(candidates, async (candidate) => {
+    return await resolveVerifiedTrack({
+      maId: candidate.id,
+      name: candidate.name,
       genre: candidate.genre,
       country: candidate.country,
-      duration: ytVideo.duration,
       source: "similar",
       similarTo: currentAnchor.name,
       hopsFromAnchor: candidate.hops,
-    }
+    }, excludeVideoIds)
   })
 }
 
 async function findByBandAnchor(currentAnchor: Anchor, currentSpread: Spread): Promise<ResolvedTrack | null> {
   const preferred = chooseBandSource(anchorFrequency, bandPickWindow, config.anchorMixWindow)
-  const allowAnchor = anchorFrequency > 0 && !isBlocked(currentAnchor.name)
+  const anchorMaId = Number.parseInt(currentAnchor.sourceId, 10)
+  const allowAnchor = anchorFrequency > 0 && !isBlocked(currentAnchor.name, anchorMaId)
   const allowSimilar = anchorFrequency < 100
   const tryAnchor = async () => (allowAnchor ? await resolveAnchorTrack(currentAnchor) : null)
   const trySimilar = async () => {
     if (!allowSimilar) return null
-    if (currentAnchor.source === "musicmap") return await findByMusicMapAnchor(currentAnchor, currentSpread)
     return await findSimilarByMaAnchor(currentAnchor, currentSpread)
   }
 
@@ -563,13 +507,13 @@ async function findByGenreDecade(
     const out: Array<{ id: number; name: string; genre: string; country: string; hops: number; score: number }> = []
     for (const node of nodes) {
       if (!node.name) continue
-      if (isRecentArtist(node.name, config.repeatProtection)) continue
-      if (isBlocked(node.name)) continue
+      if (isRecentArtist(node.name, config.repeatProtection, node.ma_id)) continue
+      if (isBlocked(node.name, node.ma_id)) continue
       if (!matchesGenre(node.genre ?? "", genre)) continue
       if (filterDecade && !matchesDecade((node.decade as Decade | null) ?? null, decades)) continue
       const info = pool.get(node.ma_id)!
       const baseScore = info.hops === 0 ? 1 : Math.max(0.01, info.aggregateScore)
-      const weighted = baseScore * getMultiplier(node.name) * 100
+      const weighted = baseScore * getMultiplier(node.name, node.ma_id) * 100
       out.push({
         id: node.ma_id,
         name: node.name,
@@ -589,20 +533,14 @@ async function findByGenreDecade(
   const sampled = weightedSample(sorted, Math.max(1, config.ytResolveCandidates))
   const excludeVideoIds = getAvoidVideoIds()
 
-  return await tryResolveWithFallback(sampled, async (name) => {
-    const candidate = sorted.find((c) => c.name === name)
-    if (!candidate) return null
-    const ytVideo = await searchTrack(name, undefined, { excludeVideoIds, genreHint: candidate.genre || genre })
-    if (!ytVideo) return null
-    return {
-      videoId: ytVideo.videoId,
-      title: ytVideo.title,
-      artist: name,
+  return await tryResolveWithFallback(sampled, async (candidate) => {
+    return await resolveVerifiedTrack({
+      maId: candidate.id,
+      name: candidate.name,
       genre: candidate.genre || genre,
       country: candidate.country,
-      duration: ytVideo.duration,
       source: candidate.hops === 0 ? "library" : "similar",
-    }
+    }, excludeVideoIds)
   })
 }
 
@@ -634,7 +572,15 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
       if (fallbackTrack) return fallbackTrack
     }
     const artist = await findLibraryArtist(currentGenre)
-    if (artist) return await resolveTrack(artist)
+    if (artist?.maId) {
+      return await resolveVerifiedTrack({
+        maId: artist.maId,
+        name: artist.name,
+        genre: artist.genres.join(" / ") || currentGenre,
+        country: artist.country,
+        source: artist.source,
+      }, getAvoidVideoIds())
+    }
     console.warn(`Genre mode: no artists found for genre "${currentGenre}"`)
     return null
   }

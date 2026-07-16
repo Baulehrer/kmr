@@ -1,7 +1,7 @@
 services:
   kmr:
     build: .
-    image: kmr:1.1.1
+    image: kmr:1.2.0
     container_name: kmr
     restart: unless-stopped
     expose:

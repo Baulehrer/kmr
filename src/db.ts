@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite"
 
-const DB_PATH = process.env.KMR_DB_PATH || "radio_cache.sqlite"
+const DB_PATH = process.env.KMR_DB_PATH || (process.env.NODE_ENV === "test" ? ":memory:" : "radio_cache.sqlite")
 const db = new Database(DB_PATH, { create: true })
 db.run("PRAGMA journal_mode = WAL")
 db.run("PRAGMA foreign_keys = ON")
@@ -98,6 +98,9 @@ if (!columnExists("graph_nodes", "source")) {
 if (!columnExists("history", "hops_from_anchor")) {
   db.run("ALTER TABLE history ADD COLUMN hops_from_anchor INTEGER")
 }
+if (!columnExists("history", "ma_id")) {
+  db.run("ALTER TABLE history ADD COLUMN ma_id INTEGER")
+}
 
 db.run(`
   CREATE TABLE IF NOT EXISTS settings (
@@ -124,6 +127,61 @@ db.run(`
   )
 `)
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_search_cache (
+    name_key TEXT PRIMARY KEY,
+    fetched_at INTEGER NOT NULL
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_releases (
+    ma_id INTEGER NOT NULL,
+    album_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    release_type TEXT NOT NULL,
+    release_year TEXT NOT NULL DEFAULT '',
+    tracks_fetched_at INTEGER,
+    PRIMARY KEY (ma_id, album_id)
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_tracks (
+    ma_id INTEGER NOT NULL,
+    album_id INTEGER NOT NULL,
+    album_title TEXT NOT NULL,
+    title TEXT NOT NULL,
+    title_key TEXT NOT NULL,
+    duration INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ma_id, album_id, title_key)
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_youtube_channels (
+    ma_id INTEGER NOT NULL,
+    channel_id TEXT NOT NULL,
+    channel_name TEXT NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    verified_at INTEGER NOT NULL,
+    PRIMARY KEY (ma_id, channel_id)
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_youtube_tracks (
+    ma_id INTEGER NOT NULL,
+    title_key TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    video_title TEXT NOT NULL,
+    duration INTEGER NOT NULL,
+    verified_at INTEGER NOT NULL,
+    PRIMARY KEY (ma_id, title_key, video_id)
+  )
+`)
+
 db.run("CREATE INDEX IF NOT EXISTS idx_ma_artists_name_key ON ma_artists(name_key)")
 db.run("CREATE INDEX IF NOT EXISTS idx_history_played_at ON history(played_at DESC)")
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_edges_from ON graph_edges(from_ma_id)")
@@ -131,6 +189,9 @@ db.run("CREATE INDEX IF NOT EXISTS idx_graph_edges_to ON graph_edges(to_ma_id)")
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_nodes_decade ON graph_nodes(decade)")
 db.run("CREATE INDEX IF NOT EXISTS idx_graph_nodes_genre ON graph_nodes(genre)")
 db.run("CREATE INDEX IF NOT EXISTS idx_mm_similar_from ON mm_similar(from_slug)")
+db.run("CREATE INDEX IF NOT EXISTS idx_ma_releases_artist ON ma_releases(ma_id)")
+db.run("CREATE INDEX IF NOT EXISTS idx_ma_tracks_artist ON ma_tracks(ma_id)")
+db.run("CREATE INDEX IF NOT EXISTS idx_ma_youtube_tracks_artist ON ma_youtube_tracks(ma_id)")
 
 export interface MaArtistRow {
   ma_id: number
@@ -150,6 +211,42 @@ export interface MaSimilarRow {
   similar_genre: string | null
   similar_country: string | null
   score: number
+}
+
+export interface MaReleaseRow {
+  ma_id: number
+  album_id: number
+  title: string
+  release_type: string
+  release_year: string
+  tracks_fetched_at: number | null
+}
+
+export interface MaTrackRow {
+  ma_id: number
+  album_id: number
+  album_title: string
+  title: string
+  title_key: string
+  duration: number
+}
+
+export interface MaYoutubeChannelRow {
+  ma_id: number
+  channel_id: string
+  channel_name: string
+  evidence_count: number
+  verified_at: number
+}
+
+export interface MaYoutubeTrackRow {
+  ma_id: number
+  title_key: string
+  video_id: string
+  channel_id: string
+  video_title: string
+  duration: number
+  verified_at: number
 }
 
 export interface GraphNodeRow {
@@ -207,6 +304,7 @@ export interface HistoryRow {
   similar_to: string | null
   played_at: number
   hops_from_anchor: number | null
+  ma_id: number | null
 }
 
 export interface ArtistFeedbackRow {

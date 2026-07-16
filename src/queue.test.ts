@@ -16,10 +16,12 @@ import {
 import type { ResolvedTrack } from "./types"
 
 function track(over: Partial<ResolvedTrack> = {}): ResolvedTrack {
+  const artist = over.artist ?? "Iron Maiden"
   return {
+    maId: over.maId ?? [...artist].reduce((sum, char) => sum + char.charCodeAt(0), 1),
     videoId: "v1",
     title: "T",
-    artist: "Iron Maiden",
+    artist,
     genre: "Heavy Metal",
     country: "UK",
     duration: 200,
@@ -65,8 +67,8 @@ describe("isDuplicate", () => {
   })
 
   test("detects same artist in queue (case-insensitive)", () => {
-    enqueue(track({ artist: "Iron Maiden" }))
-    expect(isDuplicate(track({ videoId: "other", artist: "iron maiden" }), 10)).toBe(true)
+    enqueue(track({ artist: "Iron Maiden", maId: 42 }))
+    expect(isDuplicate(track({ videoId: "other", artist: "iron maiden", maId: 42 }), 10)).toBe(true)
   })
 
   test("not duplicate when both differ", () => {
@@ -77,16 +79,16 @@ describe("isDuplicate", () => {
 
 describe("isRecentArtist re-ordering", () => {
   test("playing artist again moves it to the front of the recent window", () => {
-    addToHistory(track({ videoId: "1", artist: "A" }))
-    addToHistory(track({ videoId: "2", artist: "B" }))
-    addToHistory(track({ videoId: "3", artist: "C" }))
-    expect(isRecentArtist("A", 3)).toBe(true)
+    addToHistory(track({ videoId: "1", artist: "A", maId: 1 }))
+    addToHistory(track({ videoId: "2", artist: "B", maId: 2 }))
+    addToHistory(track({ videoId: "3", artist: "C", maId: 3 }))
+    expect(isRecentArtist("A", 3, 1)).toBe(true)
 
-    addToHistory(track({ videoId: "4", artist: "D" }))
-    expect(isRecentArtist("A", 3)).toBe(false)
+    addToHistory(track({ videoId: "4", artist: "D", maId: 4 }))
+    expect(isRecentArtist("A", 3, 1)).toBe(false)
 
-    addToHistory(track({ videoId: "5", artist: "A" }))
-    expect(isRecentArtist("A", 3)).toBe(true)
+    addToHistory(track({ videoId: "5", artist: "A", maId: 1 }))
+    expect(isRecentArtist("A", 3, 1)).toBe(true)
   })
 
   test("maxRecent=0 disables protection", () => {
@@ -97,13 +99,13 @@ describe("isRecentArtist re-ordering", () => {
 
 describe("initRecentArtists", () => {
   test("restores from history without duplicates", () => {
-    addToHistory(track({ videoId: "h1", artist: "X" }))
-    addToHistory(track({ videoId: "h2", artist: "Y" }))
-    addToHistory(track({ videoId: "h3", artist: "X" }))
+    addToHistory(track({ videoId: "h1", artist: "X", maId: 10 }))
+    addToHistory(track({ videoId: "h2", artist: "Y", maId: 11 }))
+    addToHistory(track({ videoId: "h3", artist: "X", maId: 10 }))
     trimRecentArtists(0)
     initRecentArtists(10)
-    expect(isRecentArtist("X", 10)).toBe(true)
-    expect(isRecentArtist("Y", 10)).toBe(true)
+    expect(isRecentArtist("X", 10, 10)).toBe(true)
+    expect(isRecentArtist("Y", 10, 11)).toBe(true)
   })
 
   test("returns recent video IDs from history", () => {

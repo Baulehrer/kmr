@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 import "./app.css"
 
 interface Track {
+  maId: number
   videoId: string
   title: string
   artist: string
@@ -20,16 +21,19 @@ type Spread = "narrow" | "medium" | "wide"
 type Decade = "70s" | "80s" | "90s" | "00s" | "10s" | "20s"
 
 interface Anchor {
-  source: "ma" | "musicmap"
+  source: "ma"
   sourceId: string
   name: string
 }
 
 interface AnchorCandidate {
-  source: "ma" | "musicmap"
+  source: "ma"
   sourceId: string
   name: string
   hint: string
+  genre: string
+  country: string
+  formedIn: string | null
 }
 
 type ViewName = "vinyl" | "cards" | "compact"
@@ -435,7 +439,8 @@ function App() {
   const olderHistory = React.useMemo(() => {
     if (!current) return history
     const idx = history.findIndex((t) => t.videoId === current.videoId)
-    return idx >= 0 ? history.slice(idx + 1) : history
+    const older = idx >= 0 ? history.slice(idx + 1) : history
+    return older.filter((track) => track.maId > 0)
   }, [history, current])
 
   const jumpToTrack = React.useCallback(async (videoId: string) => {
@@ -555,6 +560,7 @@ function App() {
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        if (Array.isArray(err?.candidates)) setAnchorCandidates(err.candidates)
         setAnchorError(err?.error || "Nicht gefunden")
         return
       }
@@ -575,8 +581,13 @@ function App() {
     } catch {}
   }, [])
 
-  const openMAProfile = React.useCallback(async (artist: string) => {
+  const openMAProfile = React.useCallback(async (artist: string, maId?: number) => {
     if (!artist) return
+    if (maId && maId > 0) {
+      const slug = artist.replace(/\s+/g, "_")
+      window.open(`https://www.metal-archives.com/bands/${slug}/${maId}`, "_blank")
+      return
+    }
     try {
       const data = await fetch("/api/artists/search?q=" + encodeURIComponent(artist)).then((r) => r.json())
       const match = (data.artists || []).find((a: any) => a.name.toLowerCase() === artist.toLowerCase())
@@ -618,7 +629,7 @@ function App() {
       await fetch(`/api/radio/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artist: current.artist }),
+        body: JSON.stringify({ artist: current.artist, maId: current.maId }),
       })
     } catch {}
   }, [current])
@@ -741,7 +752,7 @@ function App() {
       <div className="header">
         <h1>KMR <span className="header-sub">Kaufis Metal Radio</span></h1>
         {mode === "band" && anchor ? (
-          <span className="genre-badge" title={`Anker: ${anchor.name} (${anchor.source === "ma" ? "Metal-Archives" : "music-map"})`}>
+          <span className="genre-badge" title={`Anker: ${anchor.name} (Metal Archives)`}>
             ⚓ {anchor.name}
           </span>
         ) : mode === "genre" && genre ? (
@@ -843,7 +854,7 @@ function App() {
           <div className="track-title">{current?.title || "—"}</div>
           <div
             className="track-artist clickable"
-            onClick={() => openMAProfile(current?.artist || "")}
+            onClick={() => openMAProfile(current?.artist || "", current?.maId)}
             title="Auf Metal-Archives öffnen"
           >
             {current?.artist || ""}
@@ -963,7 +974,7 @@ function App() {
               <div className="anchor-badge">
                 <span className="anchor-label">Anker</span>
                 <span className="anchor-name">{anchor.name}</span>
-                <span className="anchor-source">{anchor.source === "ma" ? "MA" : "music-map"}</span>
+                <span className="anchor-source">MA</span>
                 <button className="btn-secondary btn-sm" onClick={clearAnchor}>
                   Ändern
                 </button>

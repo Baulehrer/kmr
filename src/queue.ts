@@ -5,8 +5,12 @@ import type { QueueItem, ResolvedTrack } from "./types"
 const queue: QueueItem[] = []
 const recentArtists: string[] = []
 
-function pushRecent(artist: string): void {
-  const key = normalizeName(artist)
+function artistKey(artist: string, maId?: number | null): string {
+  return maId && maId > 0 ? `ma:${maId}` : `name:${normalizeName(artist)}`
+}
+
+function pushRecent(artist: string, maId?: number | null): void {
+  const key = artistKey(artist, maId)
   const idx = recentArtists.indexOf(key)
   if (idx !== -1) recentArtists.splice(idx, 1)
   recentArtists.push(key)
@@ -16,20 +20,20 @@ export function initRecentArtists(maxRecent: number): void {
   recentArtists.length = 0
   // Fetch more than maxRecent to account for deduplication
   const rows = db
-    .query("SELECT artist FROM history ORDER BY played_at DESC LIMIT ?")
-    .all(maxRecent * 3) as Pick<HistoryRow, "artist">[]
+    .query("SELECT artist, ma_id FROM history ORDER BY played_at DESC LIMIT ?")
+    .all(maxRecent * 3) as Pick<HistoryRow, "artist" | "ma_id">[]
   for (const r of rows) {
     if (!r.artist) continue
-    const key = normalizeName(r.artist)
+    const key = artistKey(r.artist, r.ma_id)
     if (recentArtists.includes(key)) continue
     recentArtists.unshift(key)
     if (recentArtists.length >= maxRecent) break
   }
 }
 
-export function isRecentArtist(artist: string, maxRecent: number): boolean {
+export function isRecentArtist(artist: string, maxRecent: number, maId?: number | null): boolean {
   if (maxRecent <= 0) return false
-  const key = normalizeName(artist)
+  const key = artistKey(artist, maId)
   const idx = recentArtists.indexOf(key)
   if (idx === -1) return false
   return recentArtists.length - idx <= maxRecent
@@ -42,11 +46,11 @@ export function trimRecentArtists(maxSize: number): void {
 }
 
 export function isDuplicate(track: ResolvedTrack, repeatProtection: number): boolean {
-  if (isRecentArtist(track.artist, repeatProtection)) return true
-  const artistKey = normalizeName(track.artist)
+  if (isRecentArtist(track.artist, repeatProtection, track.maId)) return true
+  const key = artistKey(track.artist, track.maId)
   for (const item of queue) {
     if (item.track.videoId === track.videoId) return true
-    if (normalizeName(item.track.artist) === artistKey) return true
+    if (artistKey(item.track.artist, item.track.maId) === key) return true
   }
   return false
 }
@@ -96,8 +100,9 @@ export function prepend(track: ResolvedTrack): void {
 
 export function addToHistory(track: ResolvedTrack): void {
   db.run(
-    "INSERT INTO history (video_id, title, artist, genre, country, duration, source, similar_to, played_at, hops_from_anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO history (ma_id, video_id, title, artist, genre, country, duration, source, similar_to, played_at, hops_from_anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
+      track.maId,
       track.videoId,
       track.title,
       track.artist,
@@ -110,7 +115,7 @@ export function addToHistory(track: ResolvedTrack): void {
       track.hopsFromAnchor ?? null,
     ]
   )
-  pushRecent(track.artist)
+  pushRecent(track.artist, track.maId)
 }
 
 export function getHistory(limit = 50): ResolvedTrack[] {
@@ -119,6 +124,7 @@ export function getHistory(limit = 50): ResolvedTrack[] {
     .all(limit) as HistoryRow[]
 
   return rows.map((r) => ({
+    maId: r.ma_id ?? 0,
     videoId: r.video_id,
     title: r.title ?? "",
     artist: r.artist ?? "",

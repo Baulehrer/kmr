@@ -1,76 +1,77 @@
-import { searchArtist } from "./ma-client"
-import { getMusicMapSimilar, musicMapSlug } from "./musicmap-client"
-import type { Anchor } from "./types"
+import { searchArtists } from "./ma-client"
+import { normalizeName } from "./genre"
+import type { Anchor, MASearchResult } from "./types"
 
 export interface AnchorCandidate {
-  source: "ma" | "musicmap"
+  source: "ma"
   sourceId: string
   name: string
   hint: string
+  genre: string
+  country: string
+  formedIn: string | null
+}
+
+export function exactArtistMatches(name: string, candidates: MASearchResult[]): MASearchResult[] {
+  const key = normalizeName(name)
+  return candidates.filter((candidate) => normalizeName(candidate.name) === key)
 }
 
 /**
- * Resolves a free-text band name to an anchor. Prefers Metal-Archives because
- * it has the richer similarity graph; falls back to music-map.com for bands
- * MA does not know (most non-Metal).
+ * Resolves a free-text band name only when Metal Archives has one exact match.
+ * Ambiguous names must be selected by MA ID through the candidate endpoint.
  */
 export async function resolveAnchor(name: string): Promise<Anchor | null> {
   const trimmed = name.trim()
   if (!trimmed) return null
 
-  try {
-    const ma = await searchArtist(trimmed)
-    if (ma?.maId) {
-      return { source: "ma", sourceId: String(ma.maId), name: ma.name }
-    }
-  } catch (err: any) {
-    console.warn(`MA search failed for "${trimmed}":`, err.message)
+  const exact = exactArtistMatches(trimmed, await searchArtists(trimmed))
+  if (exact.length !== 1) return null
+  const ma = exact[0]!
+  return {
+    source: "ma",
+    sourceId: String(ma.maId),
+    name: ma.name,
+    genre: ma.genre,
+    country: ma.country,
+    formedIn: ma.formedIn,
   }
+}
 
-  try {
-    const similar = await getMusicMapSimilar(trimmed)
-    if (similar.length > 0) {
-      return { source: "musicmap", sourceId: musicMapSlug(trimmed), name: trimmed }
-    }
-  } catch (err: any) {
-    console.warn(`music-map lookup failed for "${trimmed}":`, err.message)
+export async function resolveAnchorCandidate(name: string, sourceId: string): Promise<Anchor | null> {
+  const maId = Number.parseInt(sourceId, 10)
+  if (!Number.isInteger(maId) || maId <= 0) return null
+  const match = (await searchArtists(name)).find(
+    (candidate) => candidate.maId === maId && normalizeName(candidate.name) === normalizeName(name),
+  )
+  if (!match) return null
+  return {
+    source: "ma",
+    sourceId: String(match.maId),
+    name: match.name,
+    genre: match.genre,
+    country: match.country,
+    formedIn: match.formedIn,
   }
-
-  return null
 }
 
 /**
- * Returns autocomplete candidates. Today: at most one MA hit and one
- * music-map hit. Gives the frontend something to disambiguate against.
+ * Returns all MA candidates so exact namesakes can be selected by identity.
  */
 export async function lookupAnchorCandidates(name: string): Promise<AnchorCandidate[]> {
   const trimmed = name.trim()
   if (!trimmed) return []
-  const out: AnchorCandidate[] = []
-
   try {
-    const ma = await searchArtist(trimmed)
-    if (ma?.maId) {
-      out.push({
-        source: "ma",
-        sourceId: String(ma.maId),
-        name: ma.name,
-        hint: [ma.genre, ma.country].filter(Boolean).join(" · ") || "Metal-Archives",
-      })
-    }
-  } catch {}
-
-  try {
-    const similar = await getMusicMapSimilar(trimmed)
-    if (similar.length > 0) {
-      out.push({
-        source: "musicmap",
-        sourceId: musicMapSlug(trimmed),
-        name: trimmed,
-        hint: `music-map · ${similar.length} ähnliche Bands`,
-      })
-    }
-  } catch {}
-
-  return out
+    return (await searchArtists(trimmed)).map((ma) => ({
+      source: "ma" as const,
+      sourceId: String(ma.maId),
+      name: ma.name,
+      hint: [ma.genre, ma.country, ma.formedIn ? `seit ${ma.formedIn}` : ""].filter(Boolean).join(" · ") || "Metal Archives",
+      genre: ma.genre,
+      country: ma.country,
+      formedIn: ma.formedIn,
+    }))
+  } catch {
+    return []
+  }
 }

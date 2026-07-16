@@ -35,7 +35,7 @@ import {
   dropQueueUpTo,
 } from "./queue"
 import db, { type HistoryRow } from "./db"
-import { resolveAnchor, lookupAnchorCandidates } from "./anchor"
+import { resolveAnchor, resolveAnchorCandidate, lookupAnchorCandidates } from "./anchor"
 import type { Mode, Spread, Anchor, Decade, ResolvedTrack } from "./types"
 import { ALL_DECADES } from "./types"
 import type { ServerWebSocket, Server } from "bun"
@@ -43,6 +43,7 @@ import { getFullGraph } from "./graph"
 import { recordLike, recordDislike, getFeedback, listFeedback } from "./feedback"
 import config from "./radio.config"
 import { getLastMaError } from "./ma-client"
+import { CANONICAL_GENRES, normalizeName } from "./genre"
 
 import indexHtml from "../frontend/index.html"
 
@@ -147,10 +148,10 @@ async function handlePlayNext(): Promise<Response> {
   return Response.json({ current: getCurrentTrack() })
 }
 
-async function readArtistFromBody(req: Request): Promise<string | null> {
+async function readArtistFromBody(req: Request): Promise<{ artist: string; maId?: number } | null> {
   try {
-    const body = (await req.json()) as { artist?: string }
-    if (body?.artist) return body.artist
+    const body = (await req.json()) as { artist?: string; maId?: number }
+    if (body?.artist) return { artist: body.artist, maId: Number.isInteger(body.maId) ? body.maId : undefined }
   } catch {
     return null // invalid JSON
   }
@@ -248,15 +249,19 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
 
     case "/api/radio/like":
     case "/api/radio/dislike": {
-      const artist = (await readArtistFromBody(req)) ?? getCurrentTrack()?.artist ?? null
-      if (!artist) return Response.json({ error: "No artist" }, { status: 400 })
-      const entry = path.endsWith("like") ? recordLike(artist) : recordDislike(artist)
+      const requested = await readArtistFromBody(req)
+      const current = getCurrentTrack()
+      const artist = requested?.artist ?? current?.artist ?? null
+      const maId = requested?.maId ?? current?.maId
+      if (!artist || !maId) return Response.json({ error: "No verified artist" }, { status: 400 })
+      const entry = path.endsWith("like") ? recordLike(artist, maId) : recordDislike(artist, maId)
       return Response.json({ feedback: entry })
     }
 
     case "/api/radio/feedback": {
       const artist = url.searchParams.get("artist")
-      if (artist) return Response.json({ feedback: getFeedback(artist) })
+      const maId = Number(url.searchParams.get("maId")) || undefined
+      if (artist) return Response.json({ feedback: getFeedback(artist, maId) })
       return Response.json({ feedback: listFeedback() })
     }
 
@@ -289,14 +294,22 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       if (!body.name || typeof body.name !== "string") {
         return Response.json({ error: "Missing name" }, { status: 400 })
       }
-      let anchor: Anchor | null
-      if (body.source === "ma" || body.source === "musicmap") {
-        anchor = { source: body.source, sourceId: String(body.sourceId ?? ""), name: body.name }
-        if (!anchor.sourceId) anchor = await resolveAnchor(body.name)
+      let anchor: Anchor | null = null
+      if (body.sourceId) {
+        if (body.source !== "ma") return Response.json({ error: "Only Metal Archives artists are allowed" }, { status: 400 })
+        anchor = await resolveAnchorCandidate(body.name, body.sourceId)
       } else {
         anchor = await resolveAnchor(body.name)
       }
       if (!anchor) {
+        if (body.sourceId) {
+          return Response.json({ error: "Invalid Metal Archives artist identity" }, { status: 400 })
+        }
+        const candidates = await lookupAnchorCandidates(body.name)
+        const exact = candidates.filter((candidate) => normalizeName(candidate.name) === normalizeName(body.name!))
+        if (exact.length > 1) {
+          return Response.json({ error: "Mehrere gleichnamige Bands gefunden – bitte auswählen", candidates: exact }, { status: 409 })
+        }
         return Response.json({ error: "Artist not found", queried: body.name }, { status: 404 })
       }
       setAnchor(anchor)
@@ -330,6 +343,9 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       const body = (await req.json().catch(() => ({}))) as { genre?: string }
       if (!body.genre || typeof body.genre !== "string") {
         return Response.json({ error: "Missing genre" }, { status: 400 })
+      }
+      if (!(CANONICAL_GENRES as readonly string[]).includes(body.genre)) {
+        return Response.json({ error: "Invalid genre" }, { status: 400 })
       }
       setGenre(body.genre)
       broadcastState()
@@ -376,8 +392,9 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
         const row = db
           .query("SELECT * FROM history WHERE video_id = ? ORDER BY played_at DESC LIMIT 1")
           .get(body.videoId) as HistoryRow | undefined
-        if (row) {
+        if (row?.ma_id && row.ma_id > 0) {
           track = {
+            maId: row.ma_id,
             videoId: row.video_id,
             title: row.title ?? "",
             artist: row.artist ?? "",
@@ -421,7 +438,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
           .query("SELECT ma_id, name, genre, country FROM ma_artists WHERE name_key LIKE ? LIMIT 5")
           .all(`%${needle}%`) as { ma_id: number; name: string; genre: string | null; country: string | null }[]
         for (const row of dbRows) {
-          if (!matches.some((m) => m.name.toLowerCase() === row.name.toLowerCase())) {
+          if (!matches.some((m) => m.maId === row.ma_id)) {
             matches.push({ name: row.name, maId: row.ma_id, genres: row.genre ? [row.genre] : [], country: row.country ?? "" })
           }
         }

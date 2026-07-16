@@ -1,7 +1,7 @@
-import db, { type MaArtistRow, type MaSimilarRow } from "./db"
+import db, { type MaArtistRow, type MaReleaseRow, type MaSimilarRow, type MaTrackRow } from "./db"
 import config from "./radio.config"
 import { normalizeName } from "./genre"
-import type { MASearchResult, MAArtistDetail, SimilarArtist } from "./types"
+import type { MASearchResult, MAArtistDetail, MARelease, MATrack, SimilarArtist } from "./types"
 
 export { parseGenre, matchesGenre } from "./genre"
 
@@ -24,6 +24,8 @@ function trackMaError(message: string): void {
 
 const ADAPTER_TIMEOUT_MS = 30_000
 const DETAIL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const SEARCH_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const DISCOGRAPHY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 let nextSlotAt = 0
 
@@ -88,39 +90,68 @@ export async function runAdapter(command: string, args: string[]): Promise<any> 
   }
 }
 
-export async function searchArtist(name: string): Promise<MASearchResult | null> {
+function fromSearchRow(row: MaArtistRow): MASearchResult {
+  return {
+    maId: row.ma_id,
+    name: row.name,
+    genre: row.genre ?? "",
+    country: row.country ?? "",
+    formedIn: row.formed_in || null,
+  }
+}
+
+export async function searchArtists(name: string): Promise<MASearchResult[]> {
   const key = normalizeName(name)
-  const cached = db
-    .query("SELECT * FROM ma_artists WHERE name_key = ? LIMIT 1")
-    .get(key) as MaArtistRow | undefined
-  if (cached) {
-    return {
-      maId: cached.ma_id,
-      name: cached.name,
-      genre: cached.genre ?? "",
-      country: cached.country ?? "",
-    }
+  if (!key) return []
+  const searchCache = db
+    .query("SELECT fetched_at FROM ma_search_cache WHERE name_key = ?")
+    .get(key) as { fetched_at: number } | undefined
+  if (searchCache && Date.now() - searchCache.fetched_at < SEARCH_CACHE_TTL_MS) {
+    return (db
+      .query("SELECT * FROM ma_artists WHERE name_key = ? ORDER BY ma_id")
+      .all(key) as MaArtistRow[]).map(fromSearchRow)
   }
 
   const result = await runAdapter("search", [name])
-  if (result.error || result.status !== 200 || !result.parsed) {
+  if (result.error || result.status !== 200 || !Array.isArray(result.parsed)) {
     const msg = `MA search failed for "${name}": ${result.error || `HTTP ${result.status}`}`
     console.warn(msg)
     trackMaError(msg)
-    return null
+    return []
   }
 
-  const parsed = result.parsed
-  if (!parsed.maId) return null
+  const parsed = (result.parsed as MASearchResult[]).filter((item) => item?.maId && item?.name)
+  const now = Date.now()
+  const tx = db.transaction(() => {
+    for (const item of parsed) {
+      upsertMaArtist.run(
+        item.maId,
+        item.name,
+        normalizeName(item.name),
+        item.genre || "",
+        item.country || "",
+        "",
+        item.formedIn || "",
+        now,
+      )
+    }
+    db.run("INSERT OR REPLACE INTO ma_search_cache (name_key, fetched_at) VALUES (?, ?)", [key, now])
+  })
+  tx()
+  return parsed
+}
 
-  const maId: number = parsed.maId
-  const resolvedName: string = parsed.name || name
-  const genre: string = parsed.genre || ""
-  const country: string = parsed.country || ""
+export async function searchArtist(name: string): Promise<MASearchResult | null> {
+  const key = normalizeName(name)
+  const exact = (await searchArtists(name)).filter((item) => normalizeName(item.name) === key)
+  return exact.length === 1 ? exact[0]! : null
+}
 
-  upsertMaArtist.run(maId, resolvedName, key, genre, country, "", "", Date.now())
-
-  return { maId, name: resolvedName, genre, country }
+export async function getArtistById(maId: number): Promise<MASearchResult | null> {
+  const cached = db.query("SELECT * FROM ma_artists WHERE ma_id = ?").get(maId) as MaArtistRow | undefined
+  if (cached) return fromSearchRow(cached)
+  const detail = await getArtistDetail(maId)
+  return detail ? { ...detail } : null
 }
 
 export async function getArtistDetail(maId: number): Promise<MAArtistDetail | null> {
@@ -198,6 +229,98 @@ export async function getSimilarArtists(maId: number): Promise<SimilarArtist[]> 
   tx(similar)
 
   return similar
+}
+
+export function normalizeCatalogTitle(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+}
+
+function releasePriority(type: string): number {
+  const normalized = type.toLowerCase()
+  if (normalized === "full-length") return 0
+  if (normalized === "ep") return 1
+  if (normalized === "single") return 2
+  if (normalized === "demo") return 3
+  return 10
+}
+
+async function ensureReleases(maId: number): Promise<MaReleaseRow[]> {
+  const cached = db
+    .query("SELECT * FROM ma_releases WHERE ma_id = ? ORDER BY release_year DESC")
+    .all(maId) as MaReleaseRow[]
+  const meta = db
+    .query("SELECT fetched_at FROM ma_search_cache WHERE name_key = ?")
+    .get(`discography:${maId}`) as { fetched_at: number } | undefined
+  if (cached.length > 0 && meta && Date.now() - meta.fetched_at < DISCOGRAPHY_CACHE_TTL_MS) return cached
+
+  const result = await runAdapter("discography", [String(maId)])
+  if (result.error || result.status !== 200 || !Array.isArray(result.parsed)) {
+    console.warn(`MA discography failed for ID ${maId}: ${result.error || `HTTP ${result.status}`}`)
+    return cached
+  }
+  const releases = result.parsed as MARelease[]
+  const now = Date.now()
+  const insert = db.prepare(
+    `INSERT INTO ma_releases (ma_id, album_id, title, release_type, release_year, tracks_fetched_at)
+     VALUES (?, ?, ?, ?, ?, NULL)
+     ON CONFLICT(ma_id, album_id) DO UPDATE SET
+       title = excluded.title, release_type = excluded.release_type, release_year = excluded.release_year`,
+  )
+  const tx = db.transaction(() => {
+    for (const release of releases) insert.run(maId, release.albumId, release.title, release.type, release.year)
+    db.run("INSERT OR REPLACE INTO ma_search_cache (name_key, fetched_at) VALUES (?, ?)", [`discography:${maId}`, now])
+  })
+  tx()
+  return db.query("SELECT * FROM ma_releases WHERE ma_id = ? ORDER BY release_year DESC").all(maId) as MaReleaseRow[]
+}
+
+async function fetchReleaseTracks(release: MaReleaseRow): Promise<void> {
+  const result = await runAdapter("release-tracks", [String(release.ma_id), String(release.album_id)])
+  const now = Date.now()
+  if (result.error || result.status !== 200 || !Array.isArray(result.parsed)) {
+    console.warn(`MA tracklist failed for release ${release.album_id}: ${result.error || `HTTP ${result.status}`}`)
+    return
+  }
+  const tracks = result.parsed as MATrack[]
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO ma_tracks (ma_id, album_id, album_title, title, title_key, duration)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  const tx = db.transaction(() => {
+    for (const track of tracks) {
+      const key = normalizeCatalogTitle(track.title)
+      if (key) insert.run(release.ma_id, release.album_id, track.album || release.title, track.title, key, track.duration || 0)
+    }
+    db.run("UPDATE ma_releases SET tracks_fetched_at = ? WHERE ma_id = ? AND album_id = ?", [now, release.ma_id, release.album_id])
+  })
+  tx()
+}
+
+export async function getDiscographyTracks(maId: number, targetCount = 12, fetchBudget = 2): Promise<MATrack[]> {
+  const releases = await ensureReleases(maId)
+  let rows = db.query("SELECT * FROM ma_tracks WHERE ma_id = ?").all(maId) as MaTrackRow[]
+  if (rows.length < targetCount) {
+    const preferred = releases
+      .filter((release) => releasePriority(release.release_type) < 10 && !release.tracks_fetched_at)
+      .sort((a, b) => releasePriority(a.release_type) - releasePriority(b.release_type))
+      .slice(0, Math.max(0, fetchBudget))
+    for (const release of preferred) await fetchReleaseTracks(release)
+    rows = db.query("SELECT * FROM ma_tracks WHERE ma_id = ?").all(maId) as MaTrackRow[]
+  }
+  return rows.map((row) => ({
+    maId: row.ma_id,
+    albumId: row.album_id,
+    album: row.album_title,
+    title: row.title,
+    duration: row.duration,
+  }))
 }
 
 export function getCachedArtistByMaId(maId: number): MAArtistDetail | null {

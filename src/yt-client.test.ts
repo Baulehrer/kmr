@@ -5,7 +5,7 @@ function video(id: string, title: string, channelName: string, duration = "4:20"
   return {
     id,
     title: { text: title },
-    author: { name: channelName },
+    author: { name: channelName, id: `channel-${id}` },
     duration: { text: duration },
   }
 }
@@ -95,5 +95,19 @@ describe("YouTube video scoring", () => {
 
   test("scores non-artist results as invalid", () => {
     expect(scoreVideo("Black Sabbath - War Pigs", "Black Sabbath - Topic", "Iron Maiden")).toBeLessThan(0)
+  })
+
+  test("requires the selected MA track title, duration and verified channel", () => {
+    const picked = pickBestVideo([
+      video("wrong-title", "F.I.G.H.T.", "Trouble - Topic", "4:00"),
+      video("wrong-channel", "Trouble - The Tempter", "Other Trouble", "6:39"),
+      video("correct", "The Tempter", "Trouble - Topic", "6:39"),
+    ], "Trouble", {
+      expectedTitle: "The Tempter",
+      expectedDuration: 399,
+      allowedChannelIds: ["channel-correct"],
+    })
+
+    expect(picked?.videoId).toBe("correct")
   })
 })
