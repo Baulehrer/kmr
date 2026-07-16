@@ -1,4 +1,4 @@
-name: Release KMR
+name: Release Kaufis Metal Radio
 
 on:
   workflow_dispatch:
@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
   packages: write
+
+env:
+  APP_VERSION: "1.4.1"
 
 jobs:
   test:
@@ -37,7 +40,7 @@ jobs:
       - run: bun run desktop:prepare
       - run: bunx tauri build --bundles appimage
       - name: Artefakt sammeln
-        run: mkdir -p dist && cp src-tauri/target/release/bundle/appimage/*.AppImage dist/KMR_1.4.0_x86_64.AppImage
+        run: mkdir -p dist && cp src-tauri/target/release/bundle/appimage/*.AppImage "dist/KMR_${APP_VERSION}_x86_64.AppImage"
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/* }
 
@@ -71,11 +74,11 @@ jobs:
         shell: pwsh
         run: |
           $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Sort-Object FullName -Descending | Select-Object -First 1).FullName
-          & $signtool sign /f certificate.pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist/KMR_1.4.0_x64_Setup.exe
+          & $signtool sign /f certificate.pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "dist/KMR_$($env:APP_VERSION)_x64_Setup.exe"
       - name: Unsigniertes Paket markieren
         if: env.WINDOWS_CERTIFICATE == ''
         shell: pwsh
-        run: Rename-Item dist/KMR_1.4.0_x64_Setup.exe KMR_1.4.0_x64_unsigned-test_Setup.exe
+        run: Rename-Item "dist/KMR_$($env:APP_VERSION)_x64_Setup.exe" "KMR_$($env:APP_VERSION)_x64_unsigned-test_Setup.exe"
       - uses: actions/upload-artifact@v4
         with: { name: windows, path: dist/* }
 
@@ -118,7 +121,7 @@ jobs:
         run: |
           mkdir -p dist
           file=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
-          if [ -n "$APPLE_CERTIFICATE" ]; then name="KMR_1.4.0_${{ matrix.arch }}.dmg"; else name="KMR_1.4.0_${{ matrix.arch }}_unsigned-test.dmg"; fi
+          if [ -n "$APPLE_CERTIFICATE" ]; then name="KMR_${APP_VERSION}_${{ matrix.arch }}.dmg"; else name="KMR_${APP_VERSION}_${{ matrix.arch }}_unsigned-test.dmg"; fi
           cp "$file" "dist/$name"
       - uses: actions/upload-artifact@v4
         with: { name: "macos-${{ matrix.arch }}", path: dist/* }
@@ -140,7 +143,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/baulehrer/kmr:1.4.0,ghcr.io/baulehrer/kmr:latest
+          tags: ghcr.io/baulehrer/kaufis-metal-radio:${{ env.APP_VERSION }},ghcr.io/baulehrer/kaufis-metal-radio:latest
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
@@ -151,4 +154,4 @@ jobs:
         with: { path: dist, merge-multiple: true }
       - run: cd dist && sha256sum * > SHA256SUMS.txt
       - env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "KMR $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "Kaufis Metal Radio $GITHUB_REF_NAME"

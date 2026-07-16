@@ -70,8 +70,8 @@ Testpakete mit `unsigned-test` im Namen sind nicht digital signiert. Das Betrieb
 Wenn Docker bereits installiert ist, kopiere diese drei Zeilen in ein Terminal:
 
 ```bash
-git clone https://github.com/Baulehrer/kmr.git
-cd kmr
+git clone https://github.com/Baulehrer/Kaufis-Metal-Radio.git
+cd Kaufis-Metal-Radio
 docker compose up -d
 ```
 

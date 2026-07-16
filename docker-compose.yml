@@ -1,7 +1,7 @@
 services:
   kmr:
     build: .
-    image: ghcr.io/baulehrer/kmr:1.4.1
+    image: ghcr.io/baulehrer/kaufis-metal-radio:1.4.1
     container_name: kmr
     restart: unless-stopped
     ports:
