@@ -309,6 +309,16 @@ function getAvoidVideoIds(): Set<string> {
   return ids
 }
 
+function getLocallyVerifiedArtistIds(): Set<number> {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+  const rows = db.query("SELECT DISTINCT ma_id FROM ma_youtube_channels WHERE verified_at >= ?").all(cutoff) as Array<{ ma_id: number }>
+  return new Set(rows.map((row) => row.ma_id))
+}
+
+function localPlaybackBoost(maId: number, verified: Set<number>): number {
+  return verified.has(maId) ? 6 : 1
+}
+
 function isAnchorTrack(track: ResolvedTrack): boolean {
   return mode === "band"
     && !!anchor
@@ -426,13 +436,14 @@ async function findSimilarTrack(genre: string, country = ""): Promise<ResolvedTr
   const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection, s.maId))
   const finalPool = nonRecent.length > 0 ? nonRecent : pool
 
+  const locallyVerified = getLocallyVerifiedArtistIds()
   const weighted = finalPool
     .map((s) => ({
       name: s.name,
       maId: s.maId,
       genre: s.genre,
       country: s.country,
-      score: Math.max(0.01, s.score * getMultiplier(s.name, s.maId)),
+      score: Math.max(0.01, s.score * getMultiplier(s.name, s.maId) * localPlaybackBoost(s.maId, locallyVerified)),
     }))
     .sort((a, b) => b.score - a.score)
 
@@ -528,6 +539,7 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
   const ids = [...neighborhood.keys()]
   const nodes = getNodesByIds(ids)
   const nodeById = new Map(nodes.map((n) => [n.ma_id, n]))
+  const locallyVerified = getLocallyVerifiedArtistIds()
 
   const pool = []
   for (const [id, info] of neighborhood) {
@@ -535,7 +547,7 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
     if (!node || !node.name) continue
     if (isRecentArtist(node.name, config.repeatProtection, id)) continue
     const baseScore = Math.max(0.01, info.aggregateScore * 100)
-    const weighted = baseScore * getMultiplier(node.name, id)
+    const weighted = baseScore * getMultiplier(node.name, id) * localPlaybackBoost(id, locallyVerified)
     pool.push({ id, hops: info.hops, name: node.name, genre: node.genre ?? "", country: node.country ?? "", score: weighted })
   }
   if (pool.length === 0) return null
@@ -605,6 +617,7 @@ async function findByGenreDecade(
 
   const ids = [...pool.keys()]
   const nodes = getNodesByIds(ids)
+  const locallyVerified = getLocallyVerifiedArtistIds()
 
   const buildCandidates = (allowRecent = false) => {
     const out: Array<{ id: number; name: string; genre: string; country: string; hops: number; score: number }> = []
@@ -615,7 +628,7 @@ async function findByGenreDecade(
       if (country && node.country !== country) continue
       const info = pool.get(node.ma_id)!
       const baseScore = info.hops === 0 ? 1 : Math.max(0.01, info.aggregateScore)
-      const weighted = baseScore * getMultiplier(node.name, node.ma_id) * 100
+      const weighted = baseScore * getMultiplier(node.name, node.ma_id) * localPlaybackBoost(node.ma_id, locallyVerified) * 100
       out.push({
         id: node.ma_id,
         name: node.name,
@@ -673,7 +686,10 @@ async function findKnownMaTrack(genre: string, decades: Decade[], country = ""):
     candidates = build(true)
     relaxedRepeat = candidates.length > 0
   }
-  const sampled = [...candidates].sort(() => Math.random() - 0.5).slice(0, Math.max(4, config.ytResolveCandidates))
+  const locallyVerified = getLocallyVerifiedArtistIds()
+  const sampled = [...candidates]
+    .sort((a, b) => Number(locallyVerified.has(b.ma_id)) - Number(locallyVerified.has(a.ma_id)) || Math.random() - 0.5)
+    .slice(0, Math.max(4, config.ytResolveCandidates))
   return await tryResolveWithFallback(sampled, async (candidate) => resolveVerifiedTrack({
     maId: candidate.ma_id,
     name: candidate.name,
