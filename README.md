@@ -6,7 +6,7 @@ Dein persönliches Radio für Rock und Metal. KMR sucht passende Musik, spielt e
 
 ### Musik entdecken
 
-Wähle eine Lieblingsband und höre ähnliche Künstler. Oder entscheide dich für ein Genre und passende Jahrzehnte. KMR stellt daraus automatisch dein Programm zusammen.
+Wähle eine Wunschband und höre ähnliche Künstler. Oder entscheide dich für ein Genre und passende Jahrzehnte. KMR stellt daraus automatisch dein Programm zusammen.
 
 ### Verlässliche Rock- und Metal-Auswahl
 

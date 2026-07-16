@@ -1164,8 +1164,8 @@ function App() {
       <div className="header">
         <h1>KMR <span className="header-sub">Kaufis Metal Radio</span></h1>
         {mode === "band" && anchor ? (
-          <span className="genre-badge" title={`${tx("Startband", "Starting band")}: ${anchor.name} (Metal Archives)`}>
-            ⚓ {anchor.name}
+          <span className="genre-badge" title={`${tx("Wunschband", "Chosen artist")}: ${anchor.name} (Metal Archives)`}>
+            ★ {anchor.name}
           </span>
         ) : mode === "genre" && genre ? (
           <span className="genre-badge">{genre}</span>
@@ -1295,7 +1295,7 @@ function App() {
               {current.genre && <span>{current.genre}</span>}
               {current.similarTo && <span>≈ {current.similarTo}</span>}
               {typeof current.hopsFromAnchor === "number" && (
-                <span title={tx("Schritte von der Startband", "Steps from the starting band")}>⤳ {current.hopsFromAnchor}</span>
+                <span title={tx("Schritte von der Wunschband", "Steps from the chosen artist")}>⤳ {current.hopsFromAnchor}</span>
               )}
             </div>
           )}
@@ -1417,7 +1417,7 @@ function App() {
           <div className="mode-band">
             {anchor ? (
               <div className="anchor-badge">
-                <span className="anchor-label">{tx("Startband", "Starting band")}</span>
+                <span className="anchor-label">{tx("Wunschband", "Chosen artist")}</span>
                 <span className="anchor-name">{anchor.name}</span>
                 <span className="anchor-source">MA</span>
                 <button className="btn-secondary btn-sm" onClick={clearAnchor}>
@@ -1456,7 +1456,11 @@ function App() {
               </div>
             )}
             <div className="mode-row anchor-frequency-wrap">
-              <span className="mode-row-label">{tx("Startband-Anteil", "Starting band share")}</span>
+              <span className="mode-row-label">
+                {language === "de"
+                  ? anchor ? `Wie oft ${anchor.name}?` : "Wie oft die Wunschband?"
+                  : anchor ? `How often ${anchor.name}?` : "How often the chosen artist?"}
+              </span>
               <input
                 type="range"
                 min={0}
