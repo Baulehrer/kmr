@@ -51,3 +51,10 @@ data/
 
 # Local notes
 local/
+
+# Desktop build output
+.desktop-build/
+src-tauri/binaries/
+src-tauri/target/
+src-tauri/gen/schemas/
+dist/

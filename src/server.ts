@@ -24,6 +24,13 @@ import {
   getAnchorFrequency,
   setAnchorFrequency,
   getRadioState,
+  startArtistFocus,
+  stopArtistFocus,
+  getReleaseTypes,
+  setReleaseTypes,
+  getCountry,
+  setCountry,
+  getTopCountries,
 } from "./scheduler"
 import {
   getQueue,
@@ -33,17 +40,21 @@ import {
   getQueueSize,
   findQueuedByVideoId,
   dropQueueUpTo,
+  removeQueuedVideo,
 } from "./queue"
 import db, { type HistoryRow } from "./db"
 import { resolveAnchor, resolveAnchorCandidate, lookupAnchorCandidates } from "./anchor"
-import type { Mode, Spread, Anchor, Decade, ResolvedTrack } from "./types"
-import { ALL_DECADES } from "./types"
+import type { Mode, Spread, Anchor, Decade, ResolvedTrack, ReleaseTypeFilter } from "./types"
+import { ALL_DECADES, ALL_RELEASE_TYPES } from "./types"
 import type { ServerWebSocket, Server } from "bun"
 import { getFullGraph } from "./graph"
 import { recordLike, recordDislike, getFeedback, listFeedback } from "./feedback"
 import config from "./radio.config"
-import { getLastMaError } from "./ma-client"
+import { getArtistDetail, getArtistDiscography, getLastMaError, getMaArtwork, getReleaseDetail, getSimilarArtists, searchArtistsBroad } from "./ma-client"
 import { CANONICAL_GENRES, normalizeName } from "./genre"
+import { getLyrics } from "./lyrics"
+import { blockTrack } from "./track-blocks"
+import { getVideoLoudnessDb } from "./yt-client"
 
 import indexHtml from "../frontend/index.html"
 
@@ -76,7 +87,26 @@ function broadcastState(): void {
     spread: state.spread,
     decades: state.decades,
     anchorFrequency: state.anchorFrequency,
+    artistFocus: state.artistFocus,
+    releaseTypes: state.releaseTypes,
+    country: state.country,
   })
+}
+
+function broadcastQueueStatus(loading: boolean, message = ""): void {
+  broadcast("queue-status", { loading, message, queueSize: getQueueSize() })
+}
+
+async function refillQueue(): Promise<void> {
+  broadcastQueueStatus(true, "Nächste Platte wird gesucht …")
+  try {
+    await prefetchQueue()
+    broadcastTrackChange()
+    broadcastQueueStatus(false, getQueueSize() > 0 ? "" : "Für diese Auswahl wurde noch kein weiterer Titel gefunden.")
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    broadcastQueueStatus(false, `Nachladen fehlgeschlagen: ${message}`)
+  }
 }
 
 const ALLOWED_METHODS: Record<string, string[]> = {
@@ -98,14 +128,31 @@ const ALLOWED_METHODS: Record<string, string[]> = {
   "/api/radio/random-genre": ["POST"],
   "/api/radio/anchor-frequency": ["POST"],
   "/api/radio/decades": ["POST"],
+  "/api/radio/lyrics": ["GET"],
+  "/api/radio/artist-focus": ["POST", "DELETE"],
+  "/api/radio/block-track": ["POST"],
+  "/api/radio/loudness": ["GET"],
+  "/api/radio/release-types": ["POST"],
+  "/api/radio/country": ["POST"],
   "/api/radio/jump": ["POST"],
   "/api/decades": ["GET"],
+  "/api/countries": ["GET"],
   "/api/artists/lookup": ["GET"],
   "/api/genres": ["GET"],
   "/api/genres/all": ["GET"],
   "/api/graph": ["GET"],
   "/api/artists/search": ["GET"],
   "/api/health": ["GET"],
+  "/api/ma/search": ["GET"],
+  "/api/ma/artwork": ["GET"],
+}
+
+function allowedMethods(path: string): string[] | undefined {
+  const direct = ALLOWED_METHODS[path]
+  if (direct) return direct
+  if (/^\/api\/ma\/artists\/\d+$/.test(path)) return ["GET"]
+  if (/^\/api\/ma\/artists\/\d+\/releases\/\d+$/.test(path)) return ["GET"]
+  return undefined
 }
 
 function isMode(v: unknown): v is Mode {
@@ -120,17 +167,26 @@ function isDecade(v: unknown): v is Decade {
   return typeof v === "string" && (ALL_DECADES as string[]).includes(v)
 }
 
+function isReleaseType(v: unknown): v is ReleaseTypeFilter {
+  return typeof v === "string" && (ALL_RELEASE_TYPES as string[]).includes(v)
+}
+
 async function playNextNowInternal(): Promise<ResolvedTrack | null> {
   let item = dequeue()
   if (!item) {
+    broadcastQueueStatus(true, "Nächste Platte wird gesucht …")
     const track = await selectPlayableTrack()
-    if (!track) return null
+    if (!track) {
+      broadcastQueueStatus(false, "Für diese Auswahl wurde kein weiterer Titel gefunden.")
+      return null
+    }
     item = { track, scheduledAt: Date.now(), playedAt: null }
   }
   markPlaying(item.track)
   broadcastTrackChange()
   broadcastState()
-  void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
+  broadcastQueueStatus(false)
+  void refillQueue()
   return item.track
 }
 
@@ -200,7 +256,7 @@ async function router(this: Server<undefined>, req: Request): Promise<Response> 
     return Response.json({ error: "Not found" }, { status: 404 })
   }
 
-  const allowed = ALLOWED_METHODS[path]
+  const allowed = allowedMethods(path)
   if (!allowed) {
     return Response.json({ error: "Not found" }, { status: 404 })
   }
@@ -221,6 +277,23 @@ async function router(this: Server<undefined>, req: Request): Promise<Response> 
 }
 
 async function handleApi(path: string, method: string, req: Request, url: URL): Promise<Response> {
+  const artistMatch = path.match(/^\/api\/ma\/artists\/(\d+)$/)
+  if (artistMatch) {
+    const maId = Number(artistMatch[1])
+    const [artist, releases, similar] = await Promise.all([
+      getArtistDetail(maId),
+      getArtistDiscography(maId),
+      getSimilarArtists(maId),
+    ])
+    if (!artist) return Response.json({ error: "Band nicht gefunden" }, { status: 404 })
+    return Response.json({ artist, releases, similar })
+  }
+  const releaseMatch = path.match(/^\/api\/ma\/artists\/(\d+)\/releases\/(\d+)$/)
+  if (releaseMatch) {
+    const detail = await getReleaseDetail(Number(releaseMatch[1]), Number(releaseMatch[2]))
+    return detail ? Response.json(detail) : Response.json({ error: "Album nicht gefunden" }, { status: 404 })
+  }
+
   switch (path) {
     case "/api/radio/current":
       return Response.json({ current: getCurrentTrack() })
@@ -265,6 +338,46 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       return Response.json({ feedback: listFeedback() })
     }
 
+    case "/api/radio/lyrics": {
+      const current = getCurrentTrack()
+      if (!current) return Response.json({ error: "Kein Titel läuft" }, { status: 404 })
+      return Response.json(await getLyrics(current))
+    }
+
+    case "/api/radio/loudness": {
+      const current = getCurrentTrack()
+      if (!current) return Response.json({ error: "Kein Titel läuft" }, { status: 404 })
+      return Response.json({ videoId: current.videoId, loudnessDb: await getVideoLoudnessDb(current.videoId) })
+    }
+
+    case "/api/radio/block-track": {
+      const current = getCurrentTrack()
+      const body = (await req.json().catch(() => ({}))) as { videoId?: string }
+      if (!current || body.videoId !== current.videoId) return Response.json({ error: "Der Titel hat inzwischen gewechselt" }, { status: 409 })
+      blockTrack(current)
+      removeQueuedVideo(current.videoId)
+      const next = await playNextNow()
+      return Response.json({ blocked: current.videoId, current: next ? getCurrentTrack() : null })
+    }
+
+    case "/api/radio/artist-focus": {
+      if (method === "DELETE") {
+        stopArtistFocus()
+        broadcastState()
+        void refillQueue()
+        return Response.json({ artistFocus: null })
+      }
+      const body = (await req.json().catch(() => ({}))) as { maId?: number; videoId?: string }
+      if (!Number.isInteger(body.maId) || !body.videoId) {
+        return Response.json({ error: "Der laufende Artist konnte nicht bestätigt werden" }, { status: 400 })
+      }
+      const focus = startArtistFocus(body.maId!, body.videoId)
+      if (!focus) return Response.json({ error: "Der Titel hat inzwischen gewechselt" }, { status: 409 })
+      broadcastState()
+      void refillQueue()
+      return Response.json({ artistFocus: focus })
+    }
+
     case "/api/radio/state": {
       const state = getRadioState()
       return Response.json({
@@ -273,6 +386,28 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
         queue: getQueue().map((q) => q.track),
         history: getHistory(10),
       })
+    }
+
+    case "/api/radio/release-types": {
+      const body = (await req.json().catch(() => ({}))) as { releaseTypes?: unknown }
+      if (!Array.isArray(body.releaseTypes) || body.releaseTypes.length === 0 || !body.releaseTypes.every(isReleaseType)) {
+        return Response.json({ error: "Mindestens ein gültiger Release-Typ ist erforderlich" }, { status: 400 })
+      }
+      setReleaseTypes(body.releaseTypes)
+      broadcastState()
+      void refillQueue()
+      return Response.json({ releaseTypes: getReleaseTypes() })
+    }
+
+    case "/api/radio/country": {
+      const body = (await req.json().catch(() => ({}))) as { country?: unknown }
+      if (typeof body.country !== "string") return Response.json({ error: "Ungültiges Land" }, { status: 400 })
+      const allowed = getTopCountries()
+      if (body.country && !allowed.includes(body.country)) return Response.json({ error: "Land ist nicht in der Top-20-Auswahl" }, { status: 400 })
+      setCountry(body.country)
+      broadcastState()
+      void refillQueue()
+      return Response.json({ country: getCountry() })
     }
 
     case "/api/radio/mode": {
@@ -323,7 +458,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       if (!isSpread(body.spread)) return Response.json({ error: "Invalid spread" }, { status: 400 })
       setSpread(body.spread)
       broadcastState()
-      void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
+      void refillQueue()
       return Response.json({ spread: getSpread() })
     }
 
@@ -335,7 +470,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       }
       setAnchorFrequency(freq)
       broadcastState()
-      void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
+      void refillQueue()
       return Response.json({ anchorFrequency: getAnchorFrequency() })
     }
 
@@ -378,6 +513,9 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
     case "/api/decades":
       return Response.json({ decades: ALL_DECADES })
 
+    case "/api/countries":
+      return Response.json({ countries: getTopCountries() })
+
     case "/api/radio/jump": {
       const body = (await req.json().catch(() => ({}))) as { videoId?: string }
       if (!body.videoId || typeof body.videoId !== "string") {
@@ -397,6 +535,9 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
             maId: row.ma_id,
             videoId: row.video_id,
             title: row.title ?? "",
+            videoTitle: row.video_title || undefined,
+            albumId: row.album_id || undefined,
+            album: row.album || undefined,
             artist: row.artist ?? "",
             genre: row.genre ?? "",
             country: row.country ?? "",
@@ -404,6 +545,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
             source: (row.source ?? "library") as ResolvedTrack["source"],
             similarTo: row.similar_to || undefined,
             hopsFromAnchor: row.hops_from_anchor ?? undefined,
+            selectionReason: row.selection_reason || undefined,
           }
         }
       }
@@ -412,7 +554,7 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       markPlaying(track, false)
       broadcastTrackChange()
       broadcastState()
-      void prefetchQueue().then(() => broadcastTrackChange()).catch(() => {})
+      void refillQueue()
       return Response.json({ current: getCurrentTrack() })
     }
 
@@ -453,6 +595,21 @@ async function handleApi(path: string, method: string, req: Request, url: URL): 
       return Response.json({ candidates })
     }
 
+    case "/api/ma/search": {
+      const q = (url.searchParams.get("q") || "").trim()
+      if (q.length < 2) return Response.json({ artists: [] })
+      return Response.json({ artists: await searchArtistsBroad(q) })
+    }
+
+    case "/api/ma/artwork": {
+      const artwork = await getMaArtwork(url.searchParams.get("url") || "")
+      if (!artwork) return Response.json({ error: "Bild nicht verfügbar" }, { status: 404 })
+      const bytes = Uint8Array.from(artwork.body)
+      return new Response(bytes.buffer, {
+        headers: { "Content-Type": artwork.contentType, "Cache-Control": "public, max-age=86400" },
+      })
+    }
+
     case "/api/health":
       return Response.json(buildHealth())
 
@@ -480,6 +637,8 @@ async function startup(): Promise<void> {
 
   const server = Bun.serve({
     port: config.server.port,
+    hostname: process.env.KMR_HOST || undefined,
+    idleTimeout: 60,
     routes: {
       "/": indexHtml,
     },
@@ -498,6 +657,9 @@ async function startup(): Promise<void> {
           spread: state.spread,
           decades: state.decades,
           anchorFrequency: state.anchorFrequency,
+          artistFocus: state.artistFocus,
+          releaseTypes: state.releaseTypes,
+          country: state.country,
           queue: getQueue().map((q) => q.track),
           history: getHistory(10),
         }))
@@ -520,7 +682,7 @@ async function startup(): Promise<void> {
   const state = getRadioState()
   console.log(`Mode: ${state.mode} | Spread: ${state.spread} | Genre: ${state.genre} | Anchor: ${state.anchor?.name ?? "(none)"}`)
 
-  prefetchQueue()
+  refillQueue()
     .then(() => console.log(`Queue populated: ${getQueue().length} tracks`))
     .catch((err) => console.warn("Prefetch failed (will retry on demand):", err.message))
 }

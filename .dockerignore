@@ -11,5 +11,10 @@ data
 .serena
 .kilo
 local
+.desktop-build
+src-tauri/target
+src-tauri/binaries
+src-tauri/gen/schemas
+dist
 *.log
 .DS_Store

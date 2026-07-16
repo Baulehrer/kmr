@@ -1,5 +1,6 @@
 import { Innertube } from "youtubei.js"
 import type { YTVideo } from "./types"
+import db from "./db"
 
 let yt: Innertube | null = null
 let clientPromise: Promise<Innertube> | null = null
@@ -234,6 +235,17 @@ export async function getClient(): Promise<Innertube> {
       })
   }
   return clientPromise
+}
+
+export async function getVideoLoudnessDb(videoId: string): Promise<number | null> {
+  const cached = db.query("SELECT loudness_db, fetched_at FROM youtube_loudness WHERE video_id = ?").get(videoId) as { loudness_db: number; fetched_at: number } | undefined
+  if (cached && Date.now() - cached.fetched_at < 90 * 24 * 60 * 60 * 1000) return cached.loudness_db
+  const client = await getClient()
+  const info = await client.getInfo(videoId)
+  const value = info.player_config?.audio_config?.loudness_db
+  if (typeof value !== "number" || !Number.isFinite(value)) return null
+  db.run("INSERT OR REPLACE INTO youtube_loudness (video_id, loudness_db, fetched_at) VALUES (?, ?, ?)", [videoId, value, Date.now()])
+  return value
 }
 
 export function pickBestVideo(videos: any[], artist: string, options: SearchTrackOptions = {}): YTVideo | null {

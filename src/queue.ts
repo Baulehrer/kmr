@@ -83,6 +83,12 @@ export function clearQueue(): void {
   queue.length = 0
 }
 
+export function removeQueuedVideo(videoId: string): void {
+  for (let index = queue.length - 1; index >= 0; index--) {
+    if (queue[index]?.track.videoId === videoId) queue.splice(index, 1)
+  }
+}
+
 export function findQueuedByVideoId(videoId: string): { track: ResolvedTrack; index: number } | null {
   const idx = queue.findIndex((q) => q.track.videoId === videoId)
   if (idx === -1) return null
@@ -100,11 +106,14 @@ export function prepend(track: ResolvedTrack): void {
 
 export function addToHistory(track: ResolvedTrack): void {
   db.run(
-    "INSERT INTO history (ma_id, video_id, title, artist, genre, country, duration, source, similar_to, played_at, hops_from_anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO history (ma_id, video_id, title, video_title, album_id, album, artist, genre, country, duration, source, similar_to, played_at, hops_from_anchor, selection_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       track.maId,
       track.videoId,
       track.title,
+      track.videoTitle || null,
+      track.albumId || null,
+      track.album || null,
       track.artist,
       track.genre,
       track.country,
@@ -113,6 +122,7 @@ export function addToHistory(track: ResolvedTrack): void {
       track.similarTo || null,
       Date.now(),
       track.hopsFromAnchor ?? null,
+      track.selectionReason || null,
     ]
   )
   pushRecent(track.artist, track.maId)
@@ -124,9 +134,12 @@ export function getHistory(limit = 50): ResolvedTrack[] {
     .all(limit) as HistoryRow[]
 
   return rows.map((r) => ({
-    maId: r.ma_id ?? 0,
-    videoId: r.video_id,
-    title: r.title ?? "",
+      maId: r.ma_id ?? 0,
+      videoId: r.video_id,
+      title: r.title ?? "",
+      videoTitle: r.video_title || undefined,
+      albumId: r.album_id || undefined,
+      album: r.album || undefined,
     artist: r.artist ?? "",
     genre: r.genre ?? "",
     country: r.country ?? "",
@@ -134,6 +147,7 @@ export function getHistory(limit = 50): ResolvedTrack[] {
     source: (r.source ?? "library") as ResolvedTrack["source"],
     similarTo: r.similar_to || undefined,
     hopsFromAnchor: r.hops_from_anchor ?? undefined,
+    selectionReason: r.selection_reason || undefined,
   }))
 }
 

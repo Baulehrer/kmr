@@ -4,11 +4,17 @@ services:
     image: ghcr.io/baulehrer/kmr:1.4.0
     container_name: kmr
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     volumes:
       - ./data:/data
       - ./artists:/app/artists:ro
     environment:
       KMR_DB_PATH: /data/radio_cache.sqlite
       KMR_LIBRARY_PATH: /app/artists
+    networks:
+      - webproxy
+
+networks:
+  webproxy:
+    external: true

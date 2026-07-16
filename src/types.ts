@@ -21,6 +21,13 @@ export interface MARelease {
   title: string
   type: string
   year: string
+  coverUrl?: string
+  releaseDate?: string
+  label?: string
+  catalogId?: string
+  format?: string
+  rating?: number
+  reviewCount?: number
 }
 
 export interface MATrack {
@@ -29,6 +36,8 @@ export interface MATrack {
   album: string
   title: string
   duration: number
+  releaseType?: string
+  releaseYear?: string
 }
 
 export interface MAArtistDetail {
@@ -38,6 +47,19 @@ export interface MAArtistDetail {
   country: string
   location: string
   formedIn: string | null
+  status: string
+  yearsActive: string
+  themes: string
+  label: string
+  logoUrl: string
+  photoUrl: string
+  members: MAMember[]
+}
+
+export interface MAMember {
+  name: string
+  role: string
+  kind: "current" | "past" | "live"
 }
 
 export interface SimilarArtist {
@@ -60,6 +82,9 @@ export interface ResolvedTrack {
   maId: number
   videoId: string
   title: string
+  videoTitle?: string
+  albumId?: number
+  album?: string
   artist: string
   genre: string
   country: string
@@ -67,6 +92,31 @@ export interface ResolvedTrack {
   source: "library" | "similar" | "discovery"
   similarTo?: string
   hopsFromAnchor?: number
+  selectionReason?: string
+  allowArtistRepeat?: boolean
+}
+
+export type ReleaseTypeFilter = "studio" | "ep" | "live" | "demo" | "single" | "other"
+
+export const ALL_RELEASE_TYPES: ReleaseTypeFilter[] = ["studio", "ep", "live", "demo", "single", "other"]
+
+export interface LyricLine {
+  startMs: number
+  text: string
+}
+
+export interface LyricsResult {
+  videoId: string
+  kind: "synced" | "plain" | "missing"
+  source: "LRCLIB"
+  lines: LyricLine[]
+  text: string
+  cachedAt: number
+}
+
+export interface ArtistFocus {
+  maId: number
+  name: string
 }
 
 export interface QueueItem {

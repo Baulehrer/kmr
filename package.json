@@ -1,6 +1,6 @@
 {
   "name": "kmr",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "Kaufis Metal Radio – Endless internet radio built around band similarity and metal genre taxonomy.",
   "module": "src/server.ts",
   "type": "module",
@@ -9,13 +9,16 @@
     "start": "bun src/server.ts",
     "dev": "bun --hot src/server.ts",
     "test": "KMR_DB_PATH=:memory: bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "desktop:prepare": "bun scripts/build-sidecars.ts",
+    "desktop:build": "bun run desktop:prepare && bunx tauri build"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@types/youtube": "^0.2.0"
+    "@types/youtube": "^0.2.0",
+    "@tauri-apps/cli": "^2.8.5"
   },
   "peerDependencies": {
     "typescript": "^5"

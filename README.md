@@ -1,12 +1,73 @@
-# KMR (Kaufis Metal Radio) — Version 1.2.0
+# KMR – Kaufis Metal Radio
 
-Ein einfaches Webradio für Metal und verwandte Genres:
+Dein persönliches Radio für Rock und Metal. KMR sucht passende Musik, spielt endlos weiter und achtet darauf, dass wirklich die richtige Band läuft – auch bei gleichnamigen Künstlern.
 
-- Band eingeben und ähnliche Künstler hören
-- Oder Genre + Jahrzehnt wählen
-- Läuft im Browser auf deinem eigenen Rechner
+## Das kann KMR
 
-## Installation (empfohlen): Docker auf dem Server
+### Musik entdecken
+
+Wähle eine Lieblingsband und höre ähnliche Künstler. Oder entscheide dich für ein Genre und passende Jahrzehnte. KMR stellt daraus automatisch dein Programm zusammen.
+
+### Verlässliche Rock- und Metal-Auswahl
+
+Bands und Songs werden mit Metal Archives abgeglichen. Dadurch landen keine fremden Künstler im Radio, nur weil sie zufällig denselben Namen tragen.
+
+### Songtexte zum Mitlesen
+
+Öffne während eines Songs die Lyrics-Ansicht. Die gerade gesungene Zeile wird hervorgehoben und wandert automatisch mit. Du kannst eine Zeile anklicken, um zu dieser Stelle zu springen. Mit `−` und `+` lässt sich ein zu früher oder später Songtext korrigieren. Falls kein synchronisierter Text verfügbar ist, zeigt KMR den normalen Songtext.
+
+### Mehr Kontrolle über das Programm
+
+Filtere nach Jahrzehnt, Land sowie Studioalbum, EP, Livealbum, Demo oder Single. KMR merkt sich deine Auswahl. Du kannst außerdem die Lautstärke automatisch angleichen und einen einzelnen Song dauerhaft sperren.
+
+Die gesamte Oberfläche lässt sich oben mit den Flaggen zwischen Deutsch und Englisch umschalten.
+
+### Nur diese Band
+
+Gefällt dir der aktuelle Song besonders gut? Mit **„Nur diese Band“** bleibt KMR beim laufenden Künstler. Ein weiterer Klick bringt dich zurück zu deiner vorherigen Auswahl.
+
+### Bandarchiv
+
+Im eingebauten Metal-Archives-Browser findest du:
+
+- Herkunft, Genre, Gründungsjahr und Status
+- Themen, Label und Bandmitglieder
+- Alben, Cover und vollständige Tracklisten
+- ähnliche Bands zum Weiterentdecken
+
+### Deine bevorzugte Ansicht
+
+Wechsle jederzeit zwischen Vinyl, Musikvideo und Lyrics. Verschiedene Farben und Darstellungen machen KMR zu deinem Radio.
+
+## Installation
+
+Die fertigen Programme findest du unter **Releases** auf der GitHub-Seite.
+
+### Windows
+
+1. Lade die Datei `KMR_1.4.0_x64_Setup.exe` herunter.
+2. Öffne die Datei und folge den angezeigten Schritten.
+3. Starte KMR über das Startmenü oder das Desktop-Symbol.
+
+### macOS
+
+1. Lade die passende DMG-Datei herunter:
+   - `aarch64` für Apple Silicon
+   - `x86_64` für Intel-Macs
+2. Öffne die DMG-Datei und ziehe KMR in den Programme-Ordner.
+3. Starte KMR aus „Programme“.
+
+### Linux
+
+1. Lade `KMR_1.4.0_x86_64.AppImage` herunter.
+2. Erlaube in den Dateieigenschaften das Ausführen als Programm.
+3. Öffne die Datei.
+
+Testpakete mit `unsigned-test` im Namen sind nicht digital signiert. Das Betriebssystem kann deshalb eine zusätzliche Sicherheitsabfrage zeigen.
+
+## Installation mit Docker
+
+Wenn Docker bereits installiert ist, kopiere diese drei Zeilen in ein Terminal:
 
 ```bash
 git clone https://github.com/Baulehrer/kmr.git
@@ -14,102 +75,28 @@ cd kmr
 docker compose up -d
 ```
 
-KMR wird intern auf Port `3000` bereitgestellt und an das externe Docker-Netzwerk `webproxy` gehängt. Der öffentliche Zugriff läuft über deinen bestehenden Caddy/Reverse Proxy.
+Öffne danach **http://localhost:3000** im Browser.
 
-Wichtig: Dieses Repo richtet keine Basic Auth ein. Falls du Auth brauchst, passiert das außerhalb von KMR in deiner Caddy-Konfiguration.
-
-Stoppen:
+KMR später beenden:
 
 ```bash
 docker compose down
 ```
 
-Die Daten bleiben in `./data` erhalten (z. B. Cache und Verlauf).
+## Erste Schritte
 
-Lokal ohne Caddy kannst du den Container direkt mit Port-Mapping starten:
+1. Öffne KMR und drücke auf „Weiter“, um das Radio zu starten.
+2. Wähle unten „Künstler“ oder „Genre“.
+3. Nutze „Vinyl“, „Video“ oder „Lyrics“ für deine Lieblingsansicht.
+4. Klicke auf den Bandnamen, um das Bandarchiv zu öffnen.
+5. Aktiviere „Nur diese Band“, wenn du bei einem Künstler bleiben möchtest.
 
-```bash
-docker build -t kmr:1.2.0 .
-docker run --rm -p 3000:3000 -v "$PWD/data:/data" -v "$PWD/artists:/app/artists:ro" kmr:1.2.0
-```
-
-Dann öffnen: <http://localhost:3000>
-
-## Neu in Version 1.2
-
-- KMR spielt ausschließlich Bands, die als konkrete ID bei Metal Archives verifiziert wurden.
-- Bei gleichnamigen Bands muss der passende Eintrag anhand von Genre, Land und Gründungsjahr ausgewählt werden. `Trouble` unterscheidet dadurch beispielsweise die schwedische Heavy-Metal-Band von der US-Doom-Band.
-- Ein YouTube-Kanal wird erst freigegeben, wenn mindestens zwei Titel aus der zugehörigen MA-Diskografie dort gefunden wurden.
-- Auch auf einem verifizierten Kanal laufen nur Titel aus genau dieser Diskografie; falsch zusammengeführte Pop-/Rap-Kataloge werden verworfen.
-- Der ungeprüfte music-map-Fallback wurde entfernt. Falls eine Band oder ein Track nicht sicher zugeordnet werden kann, überspringt KMR ihn.
-- Verlauf, Wiederholungsschutz und Feedback verwenden die MA-ID statt nur des Bandnamens.
-
-## Neu in Version 1.1.1
-
-- Docker bringt jetzt die fehlenden `scrapling`-Runtime-Abhängigkeiten mit: `curl_cffi`, `playwright` und `browserforge`.
-- Metal-Archives- und music-map-Abfragen funktionieren dadurch im Container wieder zuverlässig.
-- `docker-compose.yml` veröffentlicht keinen Host-Port mehr, sondern nutzt `expose: 3000`.
-- Der Container hängt am externen Docker-Netzwerk `webproxy`, damit Caddy KMR intern erreichen kann.
-- Keine Auth-Konfiguration im KMR-Repo.
-
-## Neu in Version 1.1
-
-- Genre-Modus bleibt strikt im gewählten Metal-Archives-Genre.
-- Jahrzehnt-Filter wird nicht mehr automatisch aufgeweicht.
-- YouTube-Treffer werden strenger geprüft, damit keine falschen Songs wegen ähnlicher Begriffe laufen.
-- Beispiele wie `Kacey Musgraves - Rainbow` werden nicht mehr als Treffer für die Band `Rainbow` akzeptiert.
-- Die Videoansicht passt sich besser an die Fenstergröße an.
-
-## Nutzung ohne Docker (lokal)
-
-Voraussetzungen:
-
-- Bun (1.3 oder neuer)
-- Python 3.11+
-
-Start:
-
-```bash
-bun install
-python3 -m venv .venv
-.venv/bin/pip install scrapling curl_cffi playwright browserforge
-bun start
-```
-
-Dann öffnen: <http://localhost:3000>
-
-## Eigene Artists-Library (optional)
-
-Lege Ordner pro Band unter `artists/` an:
-
-```text
-artists/
-  Iron Maiden/
-  Judas Priest/
-  Black Sabbath/
-```
-
-## Release als EXE/App (Windows, Linux, macOS)
-
-Ja, das geht grundsätzlich.
-
-Wichtig: KMR braucht neben dem Hauptprogramm auch Python + `scrapling`. Deshalb ist ein einzelnes "nur EXE"-File auf allen Plattformen nicht ganz trivial.
-
-Praktischer Weg für Releases:
-
-1. Pro Plattform ein Paket bauen (`win`, `linux`, `mac`)
-2. Darin enthalten:
-   - ausführbare Datei
-   - `.venv` mit `scrapling`
-   - ggf. Startskript (`start.bat` / `start.sh`)
-3. Diese Pakete als GitHub Releases veröffentlichen
-
-Wenn du willst, kann ich dir im nächsten Schritt dafür direkt ein Build-/Release-Setup (z. B. GitHub Actions) anlegen.
+KMR benötigt eine Internetverbindung für Musik, Songtexte und Bandinformationen. Nicht für jeden Song ist ein Songtext verfügbar.
 
 ## Version
 
-Aktuell: `1.2.0`
+Aktuell: **1.4.0**
 
 ## Lizenz
 
-MIT — siehe [LICENSE](LICENSE)
+MIT – siehe [LICENSE](LICENSE)

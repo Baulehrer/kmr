@@ -101,6 +101,21 @@ if (!columnExists("history", "hops_from_anchor")) {
 if (!columnExists("history", "ma_id")) {
   db.run("ALTER TABLE history ADD COLUMN ma_id INTEGER")
 }
+if (!columnExists("history", "video_title")) db.run("ALTER TABLE history ADD COLUMN video_title TEXT")
+if (!columnExists("history", "album_id")) db.run("ALTER TABLE history ADD COLUMN album_id INTEGER")
+if (!columnExists("history", "album")) db.run("ALTER TABLE history ADD COLUMN album TEXT")
+if (!columnExists("history", "selection_reason")) db.run("ALTER TABLE history ADD COLUMN selection_reason TEXT")
+
+for (const [column, definition] of [
+  ["status", "TEXT DEFAULT ''"],
+  ["years_active", "TEXT DEFAULT ''"],
+  ["themes", "TEXT DEFAULT ''"],
+  ["label", "TEXT DEFAULT ''"],
+  ["logo_url", "TEXT DEFAULT ''"],
+  ["photo_url", "TEXT DEFAULT ''"],
+] as const) {
+  if (!columnExists("ma_artists", column)) db.run(`ALTER TABLE ma_artists ADD COLUMN ${column} ${definition}`)
+}
 
 db.run(`
   CREATE TABLE IF NOT EXISTS settings (
@@ -158,6 +173,74 @@ db.run(`
   )
 `)
 
+for (const [column, definition] of [
+  ["cover_url", "TEXT DEFAULT ''"],
+  ["release_date", "TEXT DEFAULT ''"],
+  ["label", "TEXT DEFAULT ''"],
+  ["catalog_id", "TEXT DEFAULT ''"],
+  ["format", "TEXT DEFAULT ''"],
+  ["rating", "INTEGER DEFAULT -1"],
+  ["review_count", "INTEGER DEFAULT 0"],
+] as const) {
+  if (!columnExists("ma_releases", column)) db.run(`ALTER TABLE ma_releases ADD COLUMN ${column} ${definition}`)
+}
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_members (
+    ma_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    member_kind TEXT NOT NULL,
+    PRIMARY KEY (ma_id, name, role, member_kind)
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS lyrics_cache (
+    track_key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    synced_lyrics TEXT NOT NULL DEFAULT '',
+    plain_lyrics TEXT NOT NULL DEFAULT '',
+    fetched_at INTEGER NOT NULL
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS ma_browser_search (
+    query_key TEXT NOT NULL,
+    ma_id INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    PRIMARY KEY (query_key, ma_id)
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS artwork_cache (
+    url TEXT PRIMARY KEY,
+    content_type TEXT NOT NULL,
+    body BLOB NOT NULL,
+    fetched_at INTEGER NOT NULL
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS blocked_tracks (
+    video_id TEXT PRIMARY KEY,
+    ma_id INTEGER NOT NULL,
+    artist TEXT NOT NULL,
+    title TEXT NOT NULL,
+    blocked_at INTEGER NOT NULL
+  )
+`)
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS youtube_loudness (
+    video_id TEXT PRIMARY KEY,
+    loudness_db REAL NOT NULL,
+    fetched_at INTEGER NOT NULL
+  )
+`)
+
 db.run(`
   CREATE TABLE IF NOT EXISTS ma_youtube_channels (
     ma_id INTEGER NOT NULL,
@@ -181,6 +264,9 @@ db.run(`
     PRIMARY KEY (ma_id, title_key, video_id)
   )
 `)
+if (!columnExists("ma_youtube_tracks", "album_id")) {
+  db.run("ALTER TABLE ma_youtube_tracks ADD COLUMN album_id INTEGER")
+}
 
 db.run("CREATE INDEX IF NOT EXISTS idx_ma_artists_name_key ON ma_artists(name_key)")
 db.run("CREATE INDEX IF NOT EXISTS idx_history_played_at ON history(played_at DESC)")
@@ -202,6 +288,12 @@ export interface MaArtistRow {
   location: string | null
   formed_in: string | null
   updated_at: number
+  status: string | null
+  years_active: string | null
+  themes: string | null
+  label: string | null
+  logo_url: string | null
+  photo_url: string | null
 }
 
 export interface MaSimilarRow {
@@ -220,6 +312,13 @@ export interface MaReleaseRow {
   release_type: string
   release_year: string
   tracks_fetched_at: number | null
+  cover_url: string | null
+  release_date: string | null
+  label: string | null
+  catalog_id: string | null
+  format: string | null
+  rating: number
+  review_count: number
 }
 
 export interface MaTrackRow {
@@ -229,6 +328,8 @@ export interface MaTrackRow {
   title: string
   title_key: string
   duration: number
+  release_type?: string
+  release_year?: string
 }
 
 export interface MaYoutubeChannelRow {
@@ -247,6 +348,7 @@ export interface MaYoutubeTrackRow {
   video_title: string
   duration: number
   verified_at: number
+  album_id: number | null
 }
 
 export interface GraphNodeRow {
@@ -305,6 +407,32 @@ export interface HistoryRow {
   played_at: number
   hops_from_anchor: number | null
   ma_id: number | null
+  video_title: string | null
+  album_id: number | null
+  album: string | null
+  selection_reason?: string | null
+}
+
+export interface MaMemberRow {
+  ma_id: number
+  name: string
+  role: string
+  member_kind: "current" | "past" | "live"
+}
+
+export interface LyricsCacheRow {
+  track_key: string
+  kind: "synced" | "plain" | "missing"
+  synced_lyrics: string
+  plain_lyrics: string
+  fetched_at: number
+}
+
+export interface ArtworkCacheRow {
+  url: string
+  content_type: string
+  body: Uint8Array
+  fetched_at: number
 }
 
 export interface ArtistFeedbackRow {

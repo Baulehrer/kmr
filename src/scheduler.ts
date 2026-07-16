@@ -2,12 +2,13 @@ import { getAllArtists, getArtist, updateArtist } from "./library"
 import { searchArtist, runAdapter } from "./ma-client"
 import { expandArtist, getArtistsInGenre, getGraphNode, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
 import { enqueue, getQueueSize, getQueuedVideoIds, getRecentVideoIds, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
-import { parseGenre, matchesGenre, matchesDecade, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
+import { parseGenre, matchesGenre, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
 import { getMultiplier, isBlocked } from "./feedback"
+import { getBlockedVideoIds } from "./track-blocks"
 import { resolveVerifiedTrack } from "./verified-resolver"
-import type { Artist, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig } from "./types"
-import { spreadToHops, ALL_DECADES, getSpreadConfig } from "./types"
-import db, { type SettingsRow } from "./db"
+import type { Artist, ArtistFocus, ResolvedTrack, Mode, Spread, Decade, Anchor, SpreadConfig, ReleaseTypeFilter } from "./types"
+import { spreadToHops, ALL_DECADES, ALL_RELEASE_TYPES, getSpreadConfig } from "./types"
+import db, { type MaArtistRow, type SettingsRow } from "./db"
 import config from "./radio.config"
 
 function loadSetting(key: string): string | null {
@@ -25,6 +26,8 @@ const STORED_SPREAD = loadSetting("spread")
 const STORED_GENRE = loadSetting("genre")
 const STORED_DECADES = loadSetting("decades")
 const STORED_ANCHOR_FREQUENCY = loadSetting("anchorFrequency")
+const STORED_RELEASE_TYPES = loadSetting("releaseTypes")
+const STORED_COUNTRY = loadSetting("country")
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)))
@@ -57,7 +60,19 @@ let currentDecades: Decade[] = (() => {
     return []
   }
 })()
+let currentReleaseTypes: ReleaseTypeFilter[] = (() => {
+  if (!STORED_RELEASE_TYPES) return [...ALL_RELEASE_TYPES]
+  try {
+    const parsed = JSON.parse(STORED_RELEASE_TYPES) as string[]
+    const valid = parsed.filter((type): type is ReleaseTypeFilter => (ALL_RELEASE_TYPES as string[]).includes(type))
+    return valid.length > 0 ? valid : [...ALL_RELEASE_TYPES]
+  } catch { return [...ALL_RELEASE_TYPES] }
+})()
+let currentCountry = STORED_COUNTRY || ""
 let currentTrack: ResolvedTrack | null = null
+let artistFocus: ArtistFocus | null = null
+let focusArtist: { maId: number; name: string; genre: string; country: string; source: ResolvedTrack["source"] } | null = null
+const focusSeenVideoIds = new Set<string>()
 let isPlaying = false
 let playbackStartedAt = 0
 let pausedAt = 0
@@ -136,6 +151,36 @@ export function setDecades(next: Decade[]): void {
   clearQueue()
 }
 
+export function getReleaseTypes(): ReleaseTypeFilter[] {
+  return [...currentReleaseTypes]
+}
+
+export function setReleaseTypes(next: ReleaseTypeFilter[]): void {
+  currentReleaseTypes = [...next]
+  saveSetting("releaseTypes", JSON.stringify(currentReleaseTypes))
+  console.log(`Release types set to: ${currentReleaseTypes.join(", ")}`)
+  clearQueue()
+}
+
+export function getCountry(): string {
+  return currentCountry
+}
+
+export function setCountry(next: string): void {
+  currentCountry = next.trim()
+  saveSetting("country", currentCountry)
+  console.log(`Country set to: ${currentCountry || "(all)"}`)
+  clearQueue()
+}
+
+export function getTopCountries(limit = 20): string[] {
+  return (db.query(
+    `SELECT country, COUNT(*) AS count FROM ma_artists
+     WHERE country IS NOT NULL AND TRIM(country) != ''
+     GROUP BY country ORDER BY count DESC, country LIMIT ?`,
+  ).all(limit) as { country: string }[]).map((row) => row.country)
+}
+
 export function getRadioState() {
   return {
     mode,
@@ -145,7 +190,37 @@ export function getRadioState() {
     decades: getDecades(),
     playing: isPlaying,
     anchorFrequency,
+    artistFocus,
+    releaseTypes: getReleaseTypes(),
+    country: getCountry(),
   }
+}
+
+export function getArtistFocus(): ArtistFocus | null {
+  return artistFocus ? { ...artistFocus } : null
+}
+
+export function startArtistFocus(maId: number, videoId: string): ArtistFocus | null {
+  if (!currentTrack || currentTrack.maId !== maId || currentTrack.videoId !== videoId) return null
+  artistFocus = { maId, name: currentTrack.artist }
+  focusArtist = {
+    maId,
+    name: currentTrack.artist,
+    genre: currentTrack.genre,
+    country: currentTrack.country,
+    source: currentTrack.source,
+  }
+  focusSeenVideoIds.clear()
+  focusSeenVideoIds.add(currentTrack.videoId)
+  clearQueue()
+  return getArtistFocus()
+}
+
+export function stopArtistFocus(): void {
+  artistFocus = null
+  focusArtist = null
+  focusSeenVideoIds.clear()
+  clearQueue()
 }
 
 export function getCurrentTrack(): (ResolvedTrack & { progress: number }) | null {
@@ -225,6 +300,7 @@ function trackBandPick(track: ResolvedTrack): void {
 
 function getAvoidVideoIds(): Set<string> {
   const ids = new Set<string>(getQueuedVideoIds())
+  for (const id of getBlockedVideoIds()) ids.add(id)
   const historyLimit = Math.max(config.repeatProtection * 3, config.queueSize * 3, 25)
   for (const id of getRecentVideoIds(historyLimit)) ids.add(id)
   if (currentTrack) ids.add(currentTrack.videoId)
@@ -239,13 +315,30 @@ function isAnchorTrack(track: ResolvedTrack): boolean {
 }
 
 function isDuplicateForPlayback(track: ResolvedTrack): boolean {
+  if (artistFocus) {
+    if (track.maId !== artistFocus.maId) return true
+    return track.videoId === currentTrack?.videoId || getQueuedVideoIds().includes(track.videoId)
+  }
+  if (track.allowArtistRepeat) return getAvoidVideoIds().has(track.videoId)
   if (!isAnchorTrack(track)) return isDuplicate(track, config.repeatProtection)
   return getAvoidVideoIds().has(track.videoId)
 }
 
+async function findArtistFocusTrack(): Promise<ResolvedTrack | null> {
+  if (!artistFocus || !focusArtist) return null
+  const candidate = { ...focusArtist, releaseTypes: currentReleaseTypes, decades: currentDecades, selectionReason: `Band-Fokus auf ${focusArtist.name} ist aktiv.` }
+  let track = await resolveVerifiedTrack(candidate, focusSeenVideoIds)
+  if (!track && getQueueSize() === 0) {
+    focusSeenVideoIds.clear()
+    if (currentTrack) focusSeenVideoIds.add(currentTrack.videoId)
+    track = await resolveVerifiedTrack(candidate, focusSeenVideoIds)
+  }
+  if (track) focusSeenVideoIds.add(track.videoId)
+  return track
+}
+
 interface FallbackCandidate {
   name: string
-  [key: string]: unknown
 }
 
 /**
@@ -269,13 +362,14 @@ async function tryResolveWithFallback<T extends FallbackCandidate>(
   return null
 }
 
-async function findLibraryArtist(genre: string): Promise<Artist | null> {
+async function findLibraryArtist(genre: string, country = ""): Promise<Artist | null> {
   const candidates: Artist[] = []
   let lookups = 0
 
   for (const artist of getAllArtists()) {
     if (isRecentArtist(artist.name, config.repeatProtection, artist.maId)) continue
     if (isBlocked(artist.name, artist.maId ?? undefined)) continue
+    if (country && artist.country && artist.country !== country) continue
 
     if (artist.maId && artist.genres.length > 0) {
       if (matchesGenre(artist.genres, genre)) {
@@ -289,7 +383,7 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
 
     try {
       const ma = await searchArtist(artist.name)
-      if (ma && matchesGenre(ma.genre, genre)) {
+      if (ma && matchesGenre(ma.genre, genre) && (!country || ma.country === country)) {
         const genres = filterCanonical(parseGenre(ma.genre))
         updateArtist(artist.name, {
           maId: ma.maId,
@@ -308,7 +402,7 @@ async function findLibraryArtist(genre: string): Promise<Artist | null> {
   return pickRandom(candidates) ?? null
 }
 
-async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
+async function findSimilarTrack(genre: string, country = ""): Promise<ResolvedTrack | null> {
   const seedIds = getArtistsInGenre(genre)
   if (seedIds.length === 0) return null
 
@@ -325,7 +419,7 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
   const allowed = similar.filter((s) => !isBlocked(s.name, s.maId))
   if (allowed.length === 0) return null
 
-  const pool = allowed.filter((s) => matchesGenre(s.genre, genre))
+  const pool = allowed.filter((s) => matchesGenre(s.genre, genre) && (!country || s.country === country))
   if (pool.length === 0) return null
 
   const nonRecent = pool.filter((s) => !isRecentArtist(s.name, config.repeatProtection, s.maId))
@@ -356,6 +450,9 @@ async function findSimilarTrack(genre: string): Promise<ResolvedTrack | null> {
       country: candidate.country || "",
       source: "similar",
       similarTo: sourceNode?.name,
+      releaseTypes: currentReleaseTypes,
+      decades: currentDecades,
+      selectionReason: `Passt zum Genre ${genre} und wurde über ${sourceNode?.name || "eine verwandte Band"} gefunden.`,
     }, excludeVideoIds)
   })
 }
@@ -372,6 +469,9 @@ async function resolveAnchorTrack(currentAnchor: Anchor): Promise<ResolvedTrack 
     country: node?.country || currentAnchor.country || "",
     source: "similar",
     hopsFromAnchor: 0,
+    releaseTypes: currentReleaseTypes,
+    decades: currentDecades,
+    selectionReason: `${currentAnchor.name} ist dein gewählter Artist.`,
   }, getAvoidVideoIds())
 }
 
@@ -453,6 +553,9 @@ async function findSimilarByMaAnchor(currentAnchor: Anchor, currentSpread: Sprea
       source: "similar",
       similarTo: currentAnchor.name,
       hopsFromAnchor: candidate.hops,
+      releaseTypes: currentReleaseTypes,
+      decades: currentDecades,
+      selectionReason: `${candidate.name} ist über ${candidate.hops} Verbindung${candidate.hops === 1 ? "" : "en"} mit ${currentAnchor.name} verwandt.`,
     }, excludeVideoIds)
   })
 }
@@ -479,6 +582,7 @@ async function findByGenreDecade(
   genre: string,
   decades: Decade[],
   spreadLevel: Spread,
+  country = "",
 ): Promise<ResolvedTrack | null> {
   const seedIds = getArtistsInGenre(genre)
   if (seedIds.length === 0) return null
@@ -503,14 +607,14 @@ async function findByGenreDecade(
   const ids = [...pool.keys()]
   const nodes = getNodesByIds(ids)
 
-  const buildCandidates = (filterDecade: boolean) => {
+  const buildCandidates = (allowRecent = false) => {
     const out: Array<{ id: number; name: string; genre: string; country: string; hops: number; score: number }> = []
     for (const node of nodes) {
       if (!node.name) continue
-      if (isRecentArtist(node.name, config.repeatProtection, node.ma_id)) continue
+      if (!allowRecent && isRecentArtist(node.name, config.repeatProtection, node.ma_id)) continue
       if (isBlocked(node.name, node.ma_id)) continue
       if (!matchesGenre(node.genre ?? "", genre)) continue
-      if (filterDecade && !matchesDecade((node.decade as Decade | null) ?? null, decades)) continue
+      if (country && node.country !== country) continue
       const info = pool.get(node.ma_id)!
       const baseScore = info.hops === 0 ? 1 : Math.max(0.01, info.aggregateScore)
       const weighted = baseScore * getMultiplier(node.name, node.ma_id) * 100
@@ -526,7 +630,12 @@ async function findByGenreDecade(
     return out
   }
 
-  const candidates = buildCandidates(decades.length > 0)
+  let candidates = buildCandidates()
+  let relaxedRepeat = false
+  if (candidates.length === 0) {
+    candidates = buildCandidates(true)
+    relaxedRepeat = candidates.length > 0
+  }
   if (candidates.length === 0) return null
 
   const sorted = candidates.sort((a, b) => b.score - a.score)
@@ -540,12 +649,52 @@ async function findByGenreDecade(
       genre: candidate.genre || genre,
       country: candidate.country,
       source: candidate.hops === 0 ? "library" : "similar",
+      releaseTypes: currentReleaseTypes,
+      decades,
+      allowArtistRepeat: relaxedRepeat,
+      selectionReason: relaxedRepeat
+          ? `Passt zu ${genre}; der Artist-Schutz wurde gelockert, damit das Radio weiterläuft.`
+          : `Passt zu ${genre}${country ? ` aus ${country}` : ""}${decades.length ? ` und ${decades.join(", ")}` : ""}.`,
     }, excludeVideoIds)
   })
 }
 
+async function findKnownMaTrack(genre: string, decades: Decade[], country = ""): Promise<ResolvedTrack | null> {
+  const rows = db.query(
+    "SELECT * FROM ma_artists WHERE name != '' AND genre IS NOT NULL AND genre != '' ORDER BY updated_at DESC LIMIT 800",
+  ).all() as MaArtistRow[]
+  const build = (allowRecent: boolean) => rows.filter((row) => {
+    if (!matchesGenre(row.genre || "", genre) || isBlocked(row.name, row.ma_id)) return false
+    if (country && row.country !== country) return false
+    if (!allowRecent && isRecentArtist(row.name, config.repeatProtection, row.ma_id)) return false
+    return true
+  })
+  let candidates = build(false)
+  let relaxedRepeat = false
+  if (candidates.length === 0) {
+    candidates = build(true)
+    relaxedRepeat = candidates.length > 0
+  }
+  const sampled = [...candidates].sort(() => Math.random() - 0.5).slice(0, Math.max(4, config.ytResolveCandidates))
+  return await tryResolveWithFallback(sampled, async (candidate) => resolveVerifiedTrack({
+    maId: candidate.ma_id,
+    name: candidate.name,
+    genre: candidate.genre || genre,
+    country: candidate.country || "",
+    source: "discovery",
+    releaseTypes: currentReleaseTypes,
+    decades,
+    allowArtistRepeat: relaxedRepeat,
+    selectionReason: relaxedRepeat
+        ? `Passt zu ${genre}; der Artist-Schutz wurde gelockert, damit das Radio weiterläuft.`
+        : `Passt zu ${genre}${country ? ` aus ${country}` : ""}${decades.length ? ` und ${decades.join(", ")}` : ""}.`,
+  }, getAvoidVideoIds()), sampled.length)
+}
+
 export async function selectNextTrack(): Promise<ResolvedTrack | null> {
   trimRecentArtists(config.repeatProtection)
+
+  if (artistFocus) return await findArtistFocusTrack()
 
   if (mode === "band") {
     if (!anchor) {
@@ -564,14 +713,17 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
       console.warn("Genre mode requires a genre — none set")
       return null
     }
-    const track = await findByGenreDecade(currentGenre, currentDecades, spread)
+    const track = await findByGenreDecade(currentGenre, currentDecades, spread, currentCountry)
     if (track) return track
 
+    const knownTrack = await findKnownMaTrack(currentGenre, currentDecades, currentCountry)
+    if (knownTrack) return knownTrack
+
     if (Math.random() < config.similarWeight) {
-      const fallbackTrack = await findSimilarTrack(currentGenre)
+      const fallbackTrack = await findSimilarTrack(currentGenre, currentCountry)
       if (fallbackTrack) return fallbackTrack
     }
-    const artist = await findLibraryArtist(currentGenre)
+    const artist = await findLibraryArtist(currentGenre, currentCountry)
     if (artist?.maId) {
       return await resolveVerifiedTrack({
         maId: artist.maId,
@@ -579,6 +731,9 @@ export async function selectNextTrack(): Promise<ResolvedTrack | null> {
         genre: artist.genres.join(" / ") || currentGenre,
         country: artist.country,
         source: artist.source,
+        releaseTypes: currentReleaseTypes,
+        decades: currentDecades,
+        selectionReason: `Kommt aus deiner Bibliothek und passt zu ${currentGenre}${currentCountry ? ` aus ${currentCountry}` : ""}.`,
       }, getAvoidVideoIds())
     }
     console.warn(`Genre mode: no artists found for genre "${currentGenre}"`)
@@ -634,6 +789,7 @@ export function markPlaying(track: ResolvedTrack, logHistory = true): void {
   isPlaying = true
   playbackStartedAt = Date.now()
   pausedAt = 0
+  if (artistFocus && track.maId === artistFocus.maId) focusSeenVideoIds.add(track.videoId)
   if (logHistory) addToHistory(track)
 }
 

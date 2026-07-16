@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test"
-import { chooseBandSource } from "./scheduler"
+import { chooseBandSource, getArtistFocus, markPlaying, startArtistFocus, stopArtistFocus } from "./scheduler"
+import type { ResolvedTrack } from "./types"
 
 describe("chooseBandSource", () => {
   test("honors hard endpoints", () => {
@@ -25,5 +26,31 @@ describe("chooseBandSource", () => {
 
     expect(recent.filter((pick) => pick === "anchor")).toHaveLength(2)
     expect(recent.filter((pick) => pick === "similar")).toHaveLength(6)
+  })
+})
+
+describe("artist focus", () => {
+  const current: ResolvedTrack = {
+    maId: 393,
+    videoId: "trouble-1",
+    title: "Psalm 9",
+    albumId: 2462,
+    album: "The Skull",
+    artist: "Trouble",
+    genre: "Doom Metal",
+    country: "United States",
+    duration: 300,
+    source: "library",
+  }
+
+  test("only activates for the unchanged verified current track", () => {
+    stopArtistFocus()
+    markPlaying(current, false)
+    expect(startArtistFocus(15210, current.videoId)).toBeNull()
+    expect(startArtistFocus(current.maId, "stale-video")).toBeNull()
+    expect(startArtistFocus(current.maId, current.videoId)).toEqual({ maId: 393, name: "Trouble" })
+    expect(getArtistFocus()).toEqual({ maId: 393, name: "Trouble" })
+    stopArtistFocus()
+    expect(getArtistFocus()).toBeNull()
   })
 })

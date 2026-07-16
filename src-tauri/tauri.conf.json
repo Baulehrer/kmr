@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "KMR",
+  "version": "1.4.0",
+  "identifier": "de.kaufmann.kmr",
+  "build": {
+    "frontendDist": "../desktop-placeholder"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "KMR – Kaufis Metal Radio",
+      "width": 1180,
+      "height": 820,
+      "minWidth": 390,
+      "minHeight": 620,
+      "url": "index.html"
+    }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Music",
+    "shortDescription": "Metal Radio mit Lyrics und Bandarchiv",
+    "longDescription": "Kaufis Metal Radio spielt verifizierte Rock- und Metal-Bands.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/kmr-server",
+      "binaries/kmr-ma-adapter"
+    ],
+    "linux": {
+      "appimage": { "bundleMediaFramework": true }
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

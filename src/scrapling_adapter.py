@@ -2,7 +2,7 @@ import sys
 import json
 import re
 import html
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 from scrapling.fetchers import Fetcher
 
 
@@ -15,12 +15,16 @@ def fetch_url(url: str) -> dict:
         return {"status": 0, "body": "", "error": str(e)}
 
 
-def search_artists(name: str) -> dict:
+def clean_html(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", value))).strip()
+
+
+def search_artists(name: str, exact: bool = True) -> dict:
     encoded = quote(name)
     url = (
         f"https://www.metal-archives.com/search/ajax-advanced/searching/bands/"
-        f"?bandName={encoded}&exactBandLogoName=1"
-        f"&sEcho=1&iColumns=5&sColumns=&iDisplayStart=0&iDisplayLength=10"
+        f"?bandName={encoded}&exactBandLogoName={1 if exact else 0}"
+        f"&sEcho=1&iColumns=5&sColumns=&iDisplayStart=0&iDisplayLength={10 if exact else 20}"
         f"&mDataProp_0=0&mDataProp_1=1&mDataProp_2=2&mDataProp_3=3&mDataProp_4=4"
     )
     result = fetch_url(url)
@@ -87,6 +91,18 @@ def get_release_tracks(ma_id: int, album_id: int) -> dict:
         return result
     album_match = re.search(r'<h1 class="album_name">.*?<a[^>]*>(.*?)</a>', body, re.DOTALL)
     album = html.unescape(re.sub(r"<[^>]+>", "", album_match.group(1))).strip() if album_match else ""
+    def release_field(label: str) -> str:
+        match = re.search(rf'<dt>{re.escape(label)}:?</dt>\s*<dd[^>]*>(.*?)</dd>', body, re.IGNORECASE | re.DOTALL)
+        return clean_html(match.group(1)) if match else ""
+
+    reviews = release_field("Reviews")
+    rating_match = re.search(r'avg\.\s*(\d+)%', reviews, re.IGNORECASE)
+    review_count_match = re.match(r'\s*(\d+)', reviews)
+
+    cover_match = re.search(r'<a[^>]+id="cover"[^>]+href="([^"]+)"', body, re.IGNORECASE | re.DOTALL)
+    if not cover_match:
+        cover_match = re.search(r'<img[^>]+id="cover"[^>]+src="([^"]+)"', body, re.IGNORECASE)
+    cover_url = urljoin("https://www.metal-archives.com", html.unescape(cover_match.group(1))) if cover_match else ""
     tracks = []
     pattern = re.compile(
         r'<tr class="(?:even|odd)">\s*<td[^>]*>.*?</td>\s*'
@@ -106,13 +122,71 @@ def get_release_tracks(ma_id: int, album_id: int) -> dict:
             "duration": int(match.group(2)) * 60 + int(match.group(3)),
         })
     result["parsed"] = tracks
+    result["release"] = {
+        "maId": ma_id,
+        "albumId": album_id,
+        "title": album,
+        "type": release_field("Type"),
+        "year": (release_field("Release date")[-4:] if release_field("Release date") else ""),
+        "coverUrl": cover_url,
+        "releaseDate": release_field("Release date"),
+        "label": release_field("Label"),
+        "catalogId": release_field("Catalog ID"),
+        "format": release_field("Format"),
+        "rating": int(rating_match.group(1)) if rating_match else 0,
+        "reviewCount": int(review_count_match.group(1)) if review_count_match else 0,
+    }
     return result
 
 
 def get_artist_detail(ma_id: int, name: str) -> dict:
     encoded = quote(name.replace(" ", "_"), safe="_-")
     url = f"https://www.metal-archives.com/bands/{encoded}/{ma_id}"
-    return fetch_url(url)
+    result = fetch_url(url)
+    if result["error"] or result["status"] != 200:
+        return result
+    body = result["body"]
+
+    def field(label: str) -> str:
+        match = re.search(rf'<dt>{re.escape(label)}:?</dt>\s*<dd[^>]*>(.*?)</dd>', body, re.IGNORECASE | re.DOTALL)
+        return clean_html(match.group(1)) if match else ""
+
+    name_match = re.search(r'<h1 class="band_name">.*?<a[^>]*>(.*?)</a>', body, re.IGNORECASE | re.DOTALL)
+    logo_match = re.search(r'<a[^>]+id="logo"[^>]+href="([^"]+)"', body, re.IGNORECASE)
+    photo_match = re.search(r'<a[^>]+id="photo"[^>]+href="([^"]+)"', body, re.IGNORECASE)
+
+    members = []
+    member_sections = list(re.finditer(r'<div[^>]+id="band_tab_members_(current|past|live)"[^>]*>', body, re.IGNORECASE))
+    for index, section_match in enumerate(member_sections):
+        kind = section_match.group(1).lower()
+        end = member_sections[index + 1].start() if index + 1 < len(member_sections) else len(body)
+        section = body[section_match.end():end]
+        for member_match in re.finditer(
+            r'<tr[^>]+class="lineupRow"[^>]*>\s*<td[^>]*>\s*<a[^>]*>(.*?)</a>\s*</td>\s*<td[^>]*>(.*?)</td>\s*</tr>',
+            section,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            member_name = clean_html(member_match.group(1))
+            role = clean_html(member_match.group(2))
+            if member_name:
+                members.append({"name": member_name, "role": role, "kind": kind})
+
+    result["parsed"] = {
+        "maId": ma_id,
+        "name": clean_html(name_match.group(1)) if name_match else name,
+        "genre": field("Genre"),
+        "country": field("Country of origin"),
+        "location": field("Location"),
+        "formedIn": field("Formed in") or None,
+        "status": field("Status"),
+        "yearsActive": field("Years active"),
+        "themes": field("Themes"),
+        "label": field("Current label"),
+        "logoUrl": urljoin(url, html.unescape(logo_match.group(1))) if logo_match else "",
+        "photoUrl": urljoin(url, html.unescape(photo_match.group(1))) if photo_match else "",
+        "members": members,
+    }
+    return result
 
 
 def get_similar_artists(ma_id: int) -> dict:
@@ -244,6 +318,8 @@ def main() -> None:
     try:
         if command == "search":
             out = search_artists(sys.argv[2])
+        elif command == "search-all":
+            out = search_artists(sys.argv[2], exact=False)
         elif command == "detail":
             out = get_artist_detail(int(sys.argv[2]), sys.argv[3])
         elif command == "similar":

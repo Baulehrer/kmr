@@ -1,7 +1,7 @@
 import db, { type MaYoutubeChannelRow, type MaYoutubeTrackRow } from "./db"
 import { getDiscographyTracks, normalizeCatalogTitle } from "./ma-client"
 import { searchTrackCandidates } from "./yt-client"
-import type { MATrack, ResolvedTrack, YTVideo } from "./types"
+import type { Decade, MATrack, ReleaseTypeFilter, ResolvedTrack, YTVideo } from "./types"
 
 const VERIFICATION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const MIN_CHANNEL_EVIDENCE = 2
@@ -14,6 +14,10 @@ export interface VerifiedArtistCandidate {
   source: ResolvedTrack["source"]
   similarTo?: string
   hopsFromAnchor?: number
+  releaseTypes?: ReleaseTypeFilter[]
+  selectionReason?: string
+  allowArtistRepeat?: boolean
+  decades?: Decade[]
 }
 
 export interface ChannelEvidence {
@@ -83,8 +87,8 @@ async function verifyChannels(
     )
     const insertTrack = db.prepare(
       `INSERT OR REPLACE INTO ma_youtube_tracks
-       (ma_id, title_key, video_id, channel_id, video_title, duration, verified_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (ma_id, title_key, video_id, channel_id, video_title, duration, verified_at, album_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     const tx = db.transaction(() => {
       for (const [channelId, state] of verified) {
@@ -92,7 +96,7 @@ async function verifyChannels(
         for (const entry of evidence) {
           const key = normalizeCatalogTitle(entry.track.title)
           for (const video of entry.videos.filter((candidate) => candidate.channelId === channelId)) {
-            insertTrack.run(artist.maId, key, video.videoId, channelId, video.title, video.duration, now)
+            insertTrack.run(artist.maId, key, video.videoId, channelId, video.title, video.duration, now, entry.track.albumId)
           }
         }
       }
@@ -104,11 +108,14 @@ async function verifyChannels(
   return promise
 }
 
-function resolved(artist: VerifiedArtistCandidate, video: YTVideo): ResolvedTrack {
+function resolved(artist: VerifiedArtistCandidate, track: MATrack, video: YTVideo): ResolvedTrack {
   return {
     maId: artist.maId,
     videoId: video.videoId,
-    title: video.title,
+    title: track.title,
+    videoTitle: video.title,
+    albumId: track.albumId,
+    album: track.album,
     artist: artist.name,
     genre: artist.genre,
     country: artist.country,
@@ -116,6 +123,8 @@ function resolved(artist: VerifiedArtistCandidate, video: YTVideo): ResolvedTrac
     source: artist.source,
     similarTo: artist.similarTo,
     hopsFromAnchor: artist.hopsFromAnchor,
+    selectionReason: artist.selectionReason,
+    allowArtistRepeat: artist.allowArtistRepeat,
   }
 }
 
@@ -135,7 +144,7 @@ export async function resolveVerifiedTrack(
   excludeVideoIds: Iterable<string> = [],
 ): Promise<ResolvedTrack | null> {
   if (!Number.isInteger(artist.maId) || artist.maId <= 0) return null
-  const tracks = (await getDiscographyTracks(artist.maId))
+  const tracks = (await getDiscographyTracks(artist.maId, 12, 3, artist.releaseTypes, artist.decades))
     .filter((track) => track.duration >= 60 && track.duration <= 1800)
   if (tracks.length < MIN_CHANNEL_EVIDENCE) {
     console.warn(`Skipping ${artist.name}: fewer than ${MIN_CHANNEL_EVIDENCE} MA discography tracks`)
@@ -157,7 +166,11 @@ export async function resolveVerifiedTrack(
   const cachedPick = shuffled(cached)[0]
   if (cachedPick) {
     const channel = channels.find((item) => item.channel_id === cachedPick.channel_id)!
-    return resolved(artist, {
+    const track = cachedPick.album_id
+      ? tracks.find((item) => item.albumId === cachedPick.album_id && normalizeCatalogTitle(item.title) === cachedPick.title_key)
+      : trackByKey.get(cachedPick.title_key)
+    if (!track) return null
+    return resolved(artist, track, {
       videoId: cachedPick.video_id,
       title: cachedPick.video_title,
       channelId: cachedPick.channel_id,
@@ -178,11 +191,11 @@ export async function resolveVerifiedTrack(
     if (!video) continue
     db.run(
       `INSERT OR REPLACE INTO ma_youtube_tracks
-       (ma_id, title_key, video_id, channel_id, video_title, duration, verified_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [artist.maId, normalizeCatalogTitle(track.title), video.videoId, video.channelId, video.title, video.duration, Date.now()],
+       (ma_id, title_key, video_id, channel_id, video_title, duration, verified_at, album_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [artist.maId, normalizeCatalogTitle(track.title), video.videoId, video.channelId, video.title, video.duration, Date.now(), track.albumId],
     )
-    return resolved(artist, video)
+    return resolved(artist, track, video)
   }
   return null
 }
