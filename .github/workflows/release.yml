@@ -28,15 +28,20 @@ jobs:
   linux:
     needs: test
     runs-on: ubuntu-22.04
+    env:
+      PYTHON: ${{ github.workspace }}/.venv/bin/python
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "1.3.0" }
       - uses: dtolnay/rust-toolchain@stable
       - name: Systempakete installieren
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf python3-pip
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf python3-venv
       - run: bun install --frozen-lockfile
-      - run: python3 -m pip install --break-system-packages pyinstaller scrapling curl_cffi playwright browserforge
+      - name: Python-Umgebung vorbereiten
+        run: |
+          python3 -m venv .venv
+          "$PYTHON" -m pip install pyinstaller scrapling curl_cffi playwright browserforge
       - run: bun run desktop:prepare
       - run: bunx tauri build --bundles appimage
       - name: Artefakt sammeln
@@ -94,12 +99,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       PYTHON: ${{ github.workspace }}/.venv/bin/python
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_CERTIFICATE_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -110,22 +110,25 @@ jobs:
         run: |
           python3 -m venv .venv
           "$PYTHON" -m pip install pyinstaller scrapling curl_cffi playwright browserforge
-      - name: Zertifikat importieren
-        if: env.APPLE_CERTIFICATE != ''
-        run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p actions kmr.keychain
-          security default-keychain -s kmr.keychain
-          security unlock-keychain -p actions kmr.keychain
-          security import certificate.p12 -k kmr.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions kmr.keychain
       - run: bun run desktop:prepare
-      - run: bunx tauri build --bundles dmg
+      - name: Signiertes DMG bauen
+        if: env.APPLE_CERTIFICATE_AVAILABLE == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bunx tauri build --bundles dmg
+      - name: Unsigniertes DMG bauen
+        if: env.APPLE_CERTIFICATE_AVAILABLE != 'true'
+        run: bunx tauri build --bundles dmg
       - name: Artefakt sammeln
         run: |
           mkdir -p dist
           file=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
-          if [ -n "$APPLE_CERTIFICATE" ]; then name="KMR_${APP_VERSION}_${{ matrix.arch }}.dmg"; else name="KMR_${APP_VERSION}_${{ matrix.arch }}_unsigned-test.dmg"; fi
+          if [ "$APPLE_CERTIFICATE_AVAILABLE" = "true" ]; then name="KMR_${APP_VERSION}_${{ matrix.arch }}.dmg"; else name="KMR_${APP_VERSION}_${{ matrix.arch }}_unsigned-test.dmg"; fi
           cp "$file" "dist/$name"
       - uses: actions/upload-artifact@v4
         with: { name: "macos-${{ matrix.arch }}", path: dist/* }
