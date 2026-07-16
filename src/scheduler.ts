@@ -1,5 +1,5 @@
 import { getAllArtists, getArtist, updateArtist } from "./library"
-import { searchArtist, runAdapter } from "./ma-client"
+import { searchArtist } from "./ma-client"
 import { expandArtist, getArtistsInGenre, getGraphNode, getSimilarWithScores, getNeighborhood, getNodesByIds, hasGraphEdges, upsertGraphNode } from "./graph"
 import { enqueue, getQueueSize, getQueuedVideoIds, getRecentVideoIds, isRecentArtist, trimRecentArtists, addToHistory, isDuplicate, clearQueue } from "./queue"
 import { parseGenre, matchesGenre, filterCanonical, CANONICAL_GENRES, toCanonicalGenre } from "./genre"
@@ -77,8 +77,6 @@ let isPlaying = false
 let playbackStartedAt = 0
 let pausedAt = 0
 
-let genresPromise: Promise<string[]> | null = null
-let cachedGenres: string[] | null = null
 const parsedAnchorFrequency = Number.parseInt(STORED_ANCHOR_FREQUENCY || "0", 10)
 let anchorFrequency: number = Number.isFinite(parsedAnchorFrequency) ? clampPercent(parsedAnchorFrequency) : 0
 const FIND_LIBRARY_LOOKUP_LIMIT = 50
@@ -826,24 +824,8 @@ export async function selectRandomGenre(): Promise<string> {
 }
 
 export async function fetchGenresFromMA(): Promise<string[]> {
-  if (cachedGenres) return cachedGenres
-  if (genresPromise) return genresPromise
-  genresPromise = (async () => {
-    try {
-      const result = await runAdapter("browse-genres", [])
-      const raw = (result?.genres?.length ? result.genres : []) as string[]
-      const genres = raw.length > 0 ? filterCanonical(raw) : CANONICAL_GENRES
-      cachedGenres = [...genres]
-      console.log(`Fetched ${genres.length} canonical genres from MA (from ${raw.length} raw)`)
-      return cachedGenres
-    } catch (err) {
-      console.warn("Failed to fetch genres from MA:", err)
-      const fallback = [...CANONICAL_GENRES]
-      cachedGenres = fallback
-      return fallback
-    } finally {
-      genresPromise = null
-    }
-  })()
-  return genresPromise
+  // The UI deliberately exposes the stable canonical groups below. Fetching
+  // MA's complete genre vocabulary cannot change that list, so a network call
+  // here only creates avoidable traffic on every fresh server process.
+  return [...CANONICAL_GENRES]
 }

@@ -9,8 +9,8 @@ function envInt(name: string, fallback: number): number {
 
 const config: RadioConfig = {
   libraryPath: process.env.KMR_LIBRARY_PATH || "./artists",
-  maRateLimit: envInt("KMR_MA_RATE_LIMIT_MS", 1000),
-  maGraphExpansionBudget: envInt("KMR_MA_GRAPH_EXPANSION_BUDGET", 2),
+  maRateLimit: envInt("KMR_MA_RATE_LIMIT_MS", 2500),
+  maGraphExpansionBudget: envInt("KMR_MA_GRAPH_EXPANSION_BUDGET", 1),
   anchorMixWindow: envInt("KMR_ANCHOR_MIX_WINDOW", 20),
   ytResolveCandidates: envInt("KMR_YT_RESOLVE_CANDIDATES", 3),
   queueSize: envInt("KMR_QUEUE_SIZE", 10),

@@ -1,5 +1,5 @@
 import db, { type GraphNodeRow, type GraphEdgeRow, type GraphEdgeWithNodeRow } from "./db"
-import { getSimilarArtists, getCachedArtistByMaId, getArtistDetail } from "./ma-client"
+import { getSimilarArtists, getCachedArtistByMaId } from "./ma-client"
 import { matchesGenre, parseDecade } from "./genre"
 import { getAllArtists } from "./library"
 
@@ -23,22 +23,17 @@ export async function expandArtist(maId: number): Promise<void> {
   if (hasGraphEdges(maId)) return
 
   const similar = await getSimilarArtists(maId)
-  let detail = getCachedArtistByMaId(maId)
-  if (!detail?.formedIn) {
-    try {
-      const fetched = await getArtistDetail(maId)
-      if (fetched) detail = fetched
-    } catch {}
-  }
+  const detail = getCachedArtistByMaId(maId)
+  const graphNode = getGraphNode(maId)
   const now = Date.now()
   const decade = parseDecade(detail?.formedIn)
 
   const tx = db.transaction(() => {
     upsertNode.run(
       maId,
-      detail?.name || "",
-      detail?.genre || "",
-      detail?.country || "",
+      detail?.name || graphNode?.name || "",
+      detail?.genre || graphNode?.genre || "",
+      detail?.country || graphNode?.country || "",
       now,
       detail?.formedIn || null,
       decade,

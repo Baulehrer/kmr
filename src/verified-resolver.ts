@@ -144,7 +144,7 @@ export async function resolveVerifiedTrack(
   excludeVideoIds: Iterable<string> = [],
 ): Promise<ResolvedTrack | null> {
   if (!Number.isInteger(artist.maId) || artist.maId <= 0) return null
-  const tracks = (await getDiscographyTracks(artist.maId, 12, 3, artist.releaseTypes, artist.decades))
+  const tracks = (await getDiscographyTracks(artist.maId, 6, 3, artist.releaseTypes, artist.decades))
     .filter((track) => track.duration >= 60 && track.duration <= 1800)
   if (tracks.length < MIN_CHANNEL_EVIDENCE) {
     console.warn(`Skipping ${artist.name}: fewer than ${MIN_CHANNEL_EVIDENCE} MA discography tracks`)
