@@ -507,7 +507,7 @@ function App() {
   React.useEffect(() => {
     const output = normalizedVolume(volume, loudnessDb, normalization)
     outputVolumeRef.current = output
-    playerRef.current?.setVolume(output)
+    if (typeof playerRef.current?.setVolume === "function") playerRef.current.setVolume(output)
     localStorage.setItem("kmr.normalization", normalization ? "on" : "off")
   }, [volume, loudnessDb, normalization])
 
@@ -604,7 +604,7 @@ function App() {
       events: {
         onReady: () => {
           playerReadyRef.current = true
-          playerRef.current?.setVolume(outputVolumeRef.current)
+          if (typeof playerRef.current?.setVolume === "function") playerRef.current.setVolume(outputVolumeRef.current)
           const videoId = videoIdToLoad || pendingVideoIdRef.current
           if (videoId) {
             currentVideoIdRef.current = videoId
@@ -1042,7 +1042,7 @@ function App() {
     volumeRef.current = v
     const output = normalizedVolume(v, loudnessDb, normalization)
     outputVolumeRef.current = output
-    playerRef.current?.setVolume(output)
+    if (typeof playerRef.current?.setVolume === "function") playerRef.current.setVolume(output)
   }, [loudnessDb, normalization])
 
   const toggleYoutubeControls = React.useCallback(() => {
