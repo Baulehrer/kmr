@@ -87,9 +87,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15-intel
             arch: x86_64
-          - runner: macos-14-xlarge
+          - runner: macos-15
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     env:
