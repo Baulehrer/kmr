@@ -63,7 +63,7 @@ export async function getLyrics(track: ResolvedTrack): Promise<LyricsResult> {
   })
   if (track.album) params.set("album_name", track.album)
   const response = await fetch(`https://lrclib.net/api/get?${params}`, {
-    headers: { "User-Agent": "KMR/1.4.0 (https://github.com/Baulehrer/kmr)" },
+    headers: { "User-Agent": "KMR/1.4.1 (https://github.com/Baulehrer/kmr)" },
     signal: AbortSignal.timeout(12_000),
   })
   const now = Date.now()

@@ -45,7 +45,7 @@ Die fertigen Programme findest du unter **Releases** auf der GitHub-Seite.
 
 ### Windows
 
-1. Lade die Datei `KMR_1.4.0_x64_Setup.exe` herunter.
+1. Lade die Datei `KMR_1.4.1_x64_Setup.exe` herunter.
 2. Öffne die Datei und folge den angezeigten Schritten.
 3. Starte KMR über das Startmenü oder das Desktop-Symbol.
 
@@ -59,7 +59,7 @@ Die fertigen Programme findest du unter **Releases** auf der GitHub-Seite.
 
 ### Linux
 
-1. Lade `KMR_1.4.0_x86_64.AppImage` herunter.
+1. Lade `KMR_1.4.1_x86_64.AppImage` herunter.
 2. Erlaube in den Dateieigenschaften das Ausführen als Programm.
 3. Öffne die Datei.
 
@@ -95,7 +95,7 @@ KMR benötigt eine Internetverbindung für Musik, Songtexte und Bandinformatione
 
 ## Version
 
-Aktuell: **1.4.0**
+Aktuell: **1.4.1**
 
 ## Lizenz
 

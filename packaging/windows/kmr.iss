@@ -1,5 +1,5 @@
 #define AppName "KMR"
-#define AppVersion "1.4.0"
+#define AppVersion "1.4.1"
 #define AppPublisher "KMR"
 #define AppExeName "kmr.exe"
 

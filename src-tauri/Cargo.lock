@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "kmr-desktop"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "tauri",
  "tauri-build",

@@ -1,6 +1,6 @@
 [package]
 name = "kmr-desktop"
-version = "1.4.0"
+version = "1.4.1"
 description = "Kaufis Metal Radio desktop shell"
 authors = ["KMR contributors"]
 edition = "2021"

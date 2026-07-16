@@ -504,6 +504,7 @@ function App() {
   const [loudnessDb, setLoudnessDb] = React.useState<number | null>(null)
   const [normalization, setNormalization] = React.useState(() => localStorage.getItem("kmr.normalization") !== "off")
   const [volumeOpen, setVolumeOpen] = React.useState(false)
+  const [viewOpen, setViewOpen] = React.useState(false)
   const [appliedConfig, setAppliedConfig] = React.useState<RadioDraft | null>(null)
   const [applyingConfig, setApplyingConfig] = React.useState(false)
   const [configError, setConfigError] = React.useState("")
@@ -583,17 +584,18 @@ function App() {
   }, [view])
 
   React.useEffect(() => {
-    if (!settingsOpen && !volumeOpen) return
+    if (!settingsOpen && !volumeOpen && !viewOpen) return
     const onDocClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement
       if (settingsOpen && !target.closest(".settings-popover") && !target.closest(".settings-trigger")) {
         setSettingsOpen(false)
       }
       if (volumeOpen && !target.closest(".volume-menu")) setVolumeOpen(false)
+      if (viewOpen && !target.closest(".view-menu")) setViewOpen(false)
     }
     window.addEventListener("click", onDocClick)
     return () => window.removeEventListener("click", onDocClick)
-  }, [settingsOpen, volumeOpen])
+  }, [settingsOpen, volumeOpen, viewOpen])
 
   const loadIntoPlayer = React.useCallback((videoId: string, autoplay = true, startSeconds?: number) => {
     const player = playerRef.current
@@ -1192,26 +1194,12 @@ function App() {
           className="settings-trigger"
           onClick={() => setSettingsOpen((v) => !v)}
           aria-label={tx("Einstellungen", "Settings")}
-          title={tx("Ansicht und Theme", "View and theme")}
+          title={tx("Theme auswählen", "Choose theme")}
         >
           ⚙
         </button>
         {settingsOpen && (
           <div className="settings-popover" role="dialog">
-            <div className="popover-section">
-              <span className="popover-label">{tx("Ansicht", "View")}</span>
-              <div className="popover-buttons">
-                {ALL_VIEWS.map((v) => (
-                  <button
-                    key={v.value}
-                    className={view === v.value ? "active" : ""}
-                    onClick={() => setView(v.value)}
-                  >
-                    {{ vinyl: "Vinyl", cards: tx("Karten", "Cards"), compact: tx("Kompakt", "Compact") }[v.value]}
-                  </button>
-                ))}
-              </div>
-            </div>
             <div className="popover-section">
               <span className="popover-label">{tx("Theme", "Theme")}</span>
               <div className="popover-themes">
@@ -1376,10 +1364,51 @@ function App() {
               </button>
             ))}
           </div>
+          <div className={`view-menu${viewOpen ? " open" : ""}`}>
+            <button
+              className="view-trigger"
+              onClick={() => {
+                setViewOpen((value) => !value)
+                setVolumeOpen(false)
+              }}
+              title={tx("Ansicht", "View")}
+              aria-label={tx("Ansicht öffnen", "Open view")}
+              aria-expanded={viewOpen}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="6" height="6" rx="1" />
+                <rect x="14" y="4" width="6" height="6" rx="1" />
+                <rect x="4" y="14" width="6" height="6" rx="1" />
+                <rect x="14" y="14" width="6" height="6" rx="1" />
+              </svg>
+            </button>
+            {viewOpen && (
+              <div className="view-popover" role="dialog" aria-label={tx("Ansicht", "View")}>
+                <span className="popover-label">{tx("Ansicht", "View")}</span>
+                <div className="popover-buttons">
+                  {ALL_VIEWS.map((item) => (
+                    <button
+                      key={item.value}
+                      className={view === item.value ? "active" : ""}
+                      onClick={() => {
+                        setView(item.value)
+                        setViewOpen(false)
+                      }}
+                    >
+                      {{ vinyl: "Vinyl", cards: tx("Karten", "Cards"), compact: tx("Kompakt", "Compact") }[item.value]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <div className={`volume-menu${volumeOpen ? " open" : ""}`}>
             <button
               className="audio-trigger"
-              onClick={() => setVolumeOpen((value) => !value)}
+              onClick={() => {
+                setVolumeOpen((value) => !value)
+                setViewOpen(false)
+              }}
               title={tx("Lautstärke", "Volume")}
               aria-label={tx("Lautstärke öffnen", "Open volume")}
               aria-expanded={volumeOpen}
@@ -1548,28 +1577,6 @@ function App() {
           </div>
         )}
 
-        <div className="rock-confirmation">
-          <button
-            className={`lets-rock${configDirty ? " dirty" : ""}`}
-            onClick={() => void applyRadioConfig()}
-            disabled={!canApplyConfig || applyingConfig}
-          >
-            <span>{applyingConfig ? "…" : "LET’S ROCK!"}</span>
-            <small>
-              {applyingConfig
-                ? tx("Radio wird zusammengestellt", "Building your radio")
-                : mode === "band" && !anchor
-                  ? tx("Zuerst eine Wunschband auswählen", "Choose an artist first")
-                  : configDirty
-                    ? tx("Auswahl übernehmen und starten", "Apply selection and start")
-                    : current
-                      ? tx("Auswahl neu starten", "Restart selection")
-                      : tx("Auswahl starten", "Start selection")}
-            </small>
-          </button>
-          {configError && <p className="config-error" role="alert">{configError}</p>}
-        </div>
-
         <div className="mode-row">
           <span className="mode-row-label">{tx("Veröffentlichungen", "Releases")}</span>
           <div className="decade-chips">
@@ -1596,6 +1603,28 @@ function App() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="rock-confirmation">
+          <button
+            className={`lets-rock${configDirty ? " dirty" : ""}`}
+            onClick={() => void applyRadioConfig()}
+            disabled={!canApplyConfig || applyingConfig}
+          >
+            <span>{applyingConfig ? "…" : "LET’S ROCK!"}</span>
+            <small>
+              {applyingConfig
+                ? tx("Radio wird zusammengestellt", "Building your radio")
+                : mode === "band" && !anchor
+                  ? tx("Zuerst eine Wunschband auswählen", "Choose an artist first")
+                  : configDirty
+                    ? tx("Auswahl übernehmen und starten", "Apply selection and start")
+                    : current
+                      ? tx("Auswahl neu starten", "Restart selection")
+                      : tx("Auswahl starten", "Start selection")}
+            </small>
+          </button>
+          {configError && <p className="config-error" role="alert">{configError}</p>}
         </div>
       </div>
 

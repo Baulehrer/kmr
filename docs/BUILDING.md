@@ -1,6 +1,6 @@
 # KMR bauen und veröffentlichen
 
-Die technische Release-Automation liegt in `.github/workflows/release.yml`. Ein Tag wie `v1.4.0` startet Tests und erzeugt Docker-, Linux-, Windows- und macOS-Artefakte.
+Die technische Release-Automation liegt in `.github/workflows/release.yml`. Ein Tag wie `v1.4.1` startet Tests und erzeugt Docker-, Linux-, Windows- und macOS-Artefakte.
 
 ## Desktop-Sidecars
 
